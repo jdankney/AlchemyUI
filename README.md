@@ -7,9 +7,17 @@ FastAPI, one SQLite file, vanilla JS with no build step, systemd user units.
 
 One GPU, strict FIFO, honest ETAs. No accounts, no metering, no cloud.
 
-**Phase 1 (this release):** text-to-image on SDXL — prompt, negative prompt,
-aspect ratio, sampler settings, live step-by-step progress, cancel, and a
-gallery that survives a refresh.
+**What works today:**
+
+- **Generate** — text to image on SDXL: prompt, negative prompt, aspect ratio,
+  sampler settings, live step-by-step progress, cancel, and a gallery that
+  survives a refresh.
+- **Transform** — img2img with a plain-language "how much should change?"
+  slider instead of a denoise number.
+- **Paint over** — inpainting, with a brush/eraser mask editor (undo, clear,
+  adjustable brush) drawn straight onto the image.
+- **Extend** — outpainting in any direction, with a to-scale preview of the
+  canvas you are about to ask for.
 
 ---
 
@@ -38,12 +46,17 @@ SIGTERM until something kills it.
 
 ### Models
 
-Phase 1 ships one workflow, pointed at `RealVisXL_V5.0_fp16.safetensors` in
+All four workflows point at `RealVisXL_V5.0_fp16.safetensors` in
 `~/ComfyUI/models/checkpoints/`. To use a different SDXL checkpoint, change the
 `checkpoint` field in `workflows/registry.json` — no code changes.
 
 `alchemyui validate --live` tells you whether the checkpoint is actually
 present before you wait through a generation to find out.
+
+Editing uses the same checkpoint as generation. RealVisXL is not an
+*inpainting* checkpoint, so inpainted regions can show a faint seam; the
+"mask feather" slider is what trades that against how much of the original
+is preserved.
 
 ---
 
@@ -114,7 +127,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 48 tests, no GPU and no ComfyUI needed
+uv run pytest -q          # 83 tests, no GPU and no ComfyUI needed
 uv run ruff check .
 ```
 
@@ -129,8 +142,8 @@ never completes.
 
 ```
 alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
-                  registry.py workflows · storage.py output files · cli.py validate
-workflows/        registry.json + API-format templates
+                  registry.py workflows · storage.py files+uploads · cli.py validate
+workflows/        registry.json + four API-format templates
 deploy/           systemd user unit, idempotent install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
 tests/            pytest; no GPU required

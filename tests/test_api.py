@@ -6,107 +6,12 @@ recovery endpoints the browser leans on after a reconnect.
 from __future__ import annotations
 
 import json
-import socket
-import threading
 import time
 from pathlib import Path
 
 import httpx
-import pytest
-import uvicorn
-from fastapi.testclient import TestClient
 
-import alchemyui.app as appmod
-import alchemyui.queue as queuemod
-from alchemyui.comfy import get_comfy
-from alchemyui.config import get_settings
-from alchemyui.db import Database, get_db
-from alchemyui.registry import get_registry, load_registry
-from tests.conftest import FakeComfy
-
-REPO = Path(__file__).resolve().parent.parent
-
-
-def _wire(monkeypatch, db_path: str, output_dir: str, env: dict) -> tuple[Database, FakeComfy]:
-    """Point the app at a temp database, a temp output directory and a scripted
-    ComfyUI -- but the real, shipped registry and template, so the workflow
-    under test is the one that actually ships."""
-    monkeypatch.setenv("DEV_MODE", "1")
-    monkeypatch.setenv("OUTPUT_DIR", output_dir)
-    for k, v in env.items():
-        monkeypatch.setenv(k, str(v))
-    get_settings.cache_clear()
-
-    db = Database(db_path)
-    comfy = FakeComfy()
-    reg = load_registry(REPO / "workflows")
-    # lifespan() and the queue reach these by name; routes reach them via Depends
-    for mod in (appmod, queuemod):
-        monkeypatch.setattr(mod, "get_db", lambda: db)
-        monkeypatch.setattr(mod, "get_comfy", lambda: comfy)
-        monkeypatch.setattr(mod, "get_registry", lambda: reg)
-    appmod.app.dependency_overrides[get_db] = lambda: db
-    appmod.app.dependency_overrides[get_comfy] = lambda: comfy
-    appmod.app.dependency_overrides[get_registry] = lambda: reg
-    return db, comfy
-
-
-@pytest.fixture
-def client(tmp_db_path, tmp_output_dir, monkeypatch, request):
-    marker = request.node.get_closest_marker("env")
-    db, comfy = _wire(monkeypatch, tmp_db_path, tmp_output_dir,
-                      marker.kwargs if marker else {})
-    with TestClient(appmod.app) as c:
-        c.comfy = comfy
-        c.db = db
-        yield c
-    appmod.app.dependency_overrides.clear()
-    get_settings.cache_clear()
-
-
-@pytest.fixture
-def live_server(tmp_db_path, tmp_output_dir, monkeypatch):
-    """The same app behind a real socket.
-
-    TestClient cannot be used for /api/events: httpx's ASGI transport buffers
-    a response to completion before handing it back, and an SSE stream never
-    completes. The event stream is the spine of this app, so it gets tested
-    over a real connection rather than not at all. Still no GPU and no ComfyUI.
-    """
-    db, comfy = _wire(monkeypatch, tmp_db_path, tmp_output_dir, {})
-
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-
-    server = uvicorn.Server(uvicorn.Config(
-        appmod.app, log_level="warning", timeout_graceful_shutdown=2))
-    thread = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
-    thread.start()
-    deadline = time.time() + 15
-    while not server.started and time.time() < deadline:
-        time.sleep(0.02)
-    assert server.started, "uvicorn did not come up"
-
-    try:
-        yield f"http://127.0.0.1:{port}", comfy, db
-    finally:
-        server.should_exit = True
-        thread.join(15)
-        appmod.app.dependency_overrides.clear()
-        get_settings.cache_clear()
-
-
-def _wait(client, predicate, timeout=10.0):
-    """Poll an endpoint until it says what we're waiting for. The queue runs
-    on the app's own loop, so the test watches it from the outside."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        value = predicate()
-        if value:
-            return value
-        time.sleep(0.02)
-    raise AssertionError("timed out waiting for the queue")
+from tests.conftest import wait_for as _wait
 
 
 def _sse_events(response, stop_on, limit=80):

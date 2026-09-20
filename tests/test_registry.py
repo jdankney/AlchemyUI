@@ -135,3 +135,61 @@ def test_build_graph_injects_without_touching_the_template():
     assert g["5"]["inputs"]["width"] == 1344
     assert g["3"]["inputs"]["model"] == ["4", 0]          # wiring survives the clone
     assert json.dumps(w.template, sort_keys=True) == before
+
+
+# --- Phase 2 entries --------------------------------------------------------
+def test_editing_workflows_bind_what_they_claim_to_require():
+    reg = load_registry(WORKFLOWS)
+    for key, kind, needs in [("img2img-sdxl", "img2img", ("image",)),
+                             ("inpaint-sdxl", "inpaint", ("image", "mask")),
+                             ("outpaint-sdxl", "outpaint", ("image",))]:
+        w = reg.require(key)
+        assert w.kind == kind
+        assert w.requires == needs
+        for name in needs:
+            assert name in w.params, f"{key} requires {name} but binds no such param"
+
+
+def test_requires_without_a_binding_is_rejected():
+    """Otherwise the UI collects an upload that never reaches the graph."""
+    with pytest.raises(RegistryError, match="binds no 'image' param"):
+        validate_entry("bad", _entry(requires=["image"]), WORKFLOWS)
+
+
+def test_unknown_kind_is_rejected():
+    with pytest.raises(RegistryError, match="unknown kind"):
+        validate_entry("bad", _entry(kind="wishful-thinking"), WORKFLOWS)
+
+
+def test_inpaint_reads_the_mask_from_the_red_channel():
+    """LoadImageMask's "alpha" channel returns 1.0 - alpha. Using it would
+    invert the mask and repaint everything except what was brushed."""
+    w = load_registry(WORKFLOWS).require("inpaint-sdxl")
+    assert w.template["12"]["class_type"] == "LoadImageMask"
+    assert w.template["12"]["inputs"]["channel"] == "red"
+
+
+def test_img2img_has_no_empty_latent_so_it_keeps_the_source_size():
+    w = load_registry(WORKFLOWS).require("img2img-sdxl")
+    assert not any(n["class_type"] == "EmptyLatentImage" for n in w.template.values())
+    assert "width" not in w.params and "height" not in w.params
+
+
+def test_resolve_skips_aspect_for_workflows_that_do_not_size_their_own_canvas():
+    reg = load_registry(WORKFLOWS)
+    p = reg.require("img2img-sdxl").resolve({"prompt": "x", "aspect": "16:9"})
+    assert "width" not in p and "aspect" not in p
+    assert reg.require("txt2img-sdxl").resolve({"prompt": "x"})["width"] == 1024
+
+
+def test_resolve_carries_image_and_mask_references_through_untouched():
+    w = load_registry(WORKFLOWS).require("inpaint-sdxl")
+    p = w.resolve({"prompt": "x", "image": "alchemyui/a.png", "mask": "alchemyui/a.mask.png"})
+    assert p["image"] == "alchemyui/a.png"
+    assert p["mask"] == "alchemyui/a.mask.png"
+
+
+def test_outpaint_pads_are_clamped_per_side():
+    w = load_registry(WORKFLOWS).require("outpaint-sdxl")
+    p = w.resolve({"prompt": "x", "pad_left": -50, "pad_right": 99999})
+    assert p["pad_left"] == 0 and p["pad_right"] == 512

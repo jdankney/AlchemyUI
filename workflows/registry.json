@@ -12,29 +12,64 @@
     "hand, or `alchemyui validate --live` to also ask a running ComfyUI whether",
     "the node classes and checkpoints actually exist."
   ],
-
   "workflows": {
     "txt2img-sdxl": {
       "display": "Generate (SDXL)",
       "template": "sdxl_txt2img.v1.api.json",
       "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
       "blurb": "Photorealistic, 1024px native.",
-
-      "inputs": ["prompt", "negative", "aspect", "seed", "steps", "cfg", "sampler", "scheduler"],
-
+      "inputs": [
+        "prompt",
+        "negative",
+        "aspect",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
       "params": {
-        "prompt":     { "node": "6", "field": "text" },
-        "negative":   { "node": "7", "field": "text" },
-        "width":      { "node": "5", "field": "width" },
-        "height":     { "node": "5", "field": "height" },
-        "seed":       { "node": "3", "field": "seed" },
-        "steps":      { "node": "3", "field": "steps" },
-        "cfg":        { "node": "3", "field": "cfg" },
-        "sampler":    { "node": "3", "field": "sampler_name" },
-        "scheduler":  { "node": "3", "field": "scheduler" },
-        "checkpoint": { "node": "4", "field": "ckpt_name" }
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "width": {
+          "node": "5",
+          "field": "width"
+        },
+        "height": {
+          "node": "5",
+          "field": "height"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        }
       },
-
       "defaults": {
         "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
         "steps": 25,
@@ -43,30 +78,441 @@
         "scheduler": "karras",
         "aspect": "1:1"
       },
-
       "limits": {
-        "steps": [1, 60],
-        "cfg": [1.0, 15.0]
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ]
       },
-
       "choices": {
-        "sampler": ["dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "euler", "euler_ancestral", "ddim", "uni_pc"],
-        "scheduler": ["karras", "normal", "simple", "sgm_uniform", "exponential", "beta"]
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
       },
-
       "aspects": {
-        "1:1":  [1024, 1024],
-        "3:4":  [896, 1152],
-        "4:3":  [1152, 896],
-        "9:16": [768, 1344],
-        "16:9": [1344, 768]
+        "1:1": [
+          1024,
+          1024
+        ],
+        "3:4": [
+          896,
+          1152
+        ],
+        "4:3": [
+          1152,
+          896
+        ],
+        "9:16": [
+          768,
+          1344
+        ],
+        "16:9": [
+          1344,
+          768
+        ]
       },
-
       "progress_node": "3",
       "output_node": "9",
-
       "_est_note": "Seeds the ETA until real runs are observed, then an EWMA takes over. seconds_per_step is measured on a GTX 1660 Ti Mobile (6GB, --fp8_e4m3fn-unet): SDXL 1024x1024 x25 steps = ~131s wall. load_s is deliberately conservative -- an observed 3.8s was a page-cache-warm read, not a cold one.",
-      "est": { "seconds_per_step": 5.25, "load_s": 35 }
+      "est": {
+        "seconds_per_step": 5.25,
+        "load_s": 35
+      }
+    },
+    "img2img-sdxl": {
+      "display": "Transform an image",
+      "kind": "img2img",
+      "template": "sdxl_img2img.v1.api.json",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "blurb": "Redraw an image you upload, keeping as much or as little as you like.",
+      "requires": [
+        "image"
+      ],
+      "inputs": [
+        "prompt",
+        "negative",
+        "image",
+        "denoise",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "denoise": {
+          "node": "3",
+          "field": "denoise"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "denoise": 0.55,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "denoise": [
+          0.3,
+          0.9
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 5.25,
+        "load_s": 35
+      }
+    },
+    "inpaint-sdxl": {
+      "display": "Paint over part of an image",
+      "kind": "inpaint",
+      "template": "sdxl_inpaint.v1.api.json",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "blurb": "Brush the area you want replaced, then describe what goes there.",
+      "requires": [
+        "image",
+        "mask"
+      ],
+      "inputs": [
+        "prompt",
+        "negative",
+        "image",
+        "mask",
+        "grow_mask",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "mask": {
+          "node": "12",
+          "field": "image"
+        },
+        "grow_mask": {
+          "node": "11",
+          "field": "grow_mask_by"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "grow_mask": 32,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "grow_mask": [
+          0,
+          64
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 5.25,
+        "load_s": 35
+      },
+      "_grow_mask_note": "ComfyUI's own default is 6, which leaves a visible ring around the mask on a 1000px-ish image: RealVisXL is not an inpainting checkpoint, so it refills the blanked region with a slightly different colour balance. 32 was measured to reduce that markedly. Higher values blend better but regenerate more of what you kept, which is why the slider goes to 64."
+    },
+    "outpaint-sdxl": {
+      "display": "Extend an image",
+      "kind": "outpaint",
+      "template": "sdxl_outpaint.v1.api.json",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "blurb": "Grow the canvas outwards and let the model fill in the new space.",
+      "requires": [
+        "image"
+      ],
+      "inputs": [
+        "prompt",
+        "negative",
+        "image",
+        "pad_left",
+        "pad_top",
+        "pad_right",
+        "pad_bottom",
+        "feathering",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "pad_left": {
+          "node": "13",
+          "field": "left"
+        },
+        "pad_top": {
+          "node": "13",
+          "field": "top"
+        },
+        "pad_right": {
+          "node": "13",
+          "field": "right"
+        },
+        "pad_bottom": {
+          "node": "13",
+          "field": "bottom"
+        },
+        "feathering": {
+          "node": "13",
+          "field": "feathering"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "pad_left": 0,
+        "pad_top": 0,
+        "pad_right": 256,
+        "pad_bottom": 0,
+        "feathering": 40,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras"
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "feathering": [
+          0,
+          128
+        ],
+        "pad_left": [
+          0,
+          512
+        ],
+        "pad_top": [
+          0,
+          512
+        ],
+        "pad_right": [
+          0,
+          512
+        ],
+        "pad_bottom": [
+          0,
+          512
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 5.25,
+        "load_s": 35
+      }
     }
   }
 }

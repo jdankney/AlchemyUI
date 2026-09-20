@@ -12,20 +12,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .comfy import ComfyClient, get_comfy
-from .config import get_settings
-from .db import Database, get_db
+from .config import Settings, get_settings
+from .db import Database, get_db, now
 from .identity import Principal, get_principal
 from .queue import QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
+from .storage import UploadRejected, normalise_mask, normalise_upload, save_upload
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -46,6 +48,7 @@ async def lifespan(app: FastAPI):
                     comfy.base_url)
 
     Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
     await start_queue()
     log.info("alchemyui up on %s:%s (dev_mode=%s)",
              settings.app_bind_host, settings.port, settings.is_dev)
@@ -98,6 +101,83 @@ async def list_workflows(principal: Principal = Depends(get_principal),
 
 
 # --------------------------------------------------------------------------- #
+# uploads (Phase 2) -- the source image, and the mask painted over it
+# --------------------------------------------------------------------------- #
+async def _record_upload(db: Database, comfy: ComfyClient, settings: Settings,
+                         data: bytes) -> dict:
+    """Normalise an uploaded image, keep our own copy, and put it where
+    ComfyUI's LoadImage can find it."""
+    try:
+        png, width, height = normalise_upload(
+            data, settings.upload_max_edge, settings.upload_max_mb)
+    except UploadRejected as e:
+        raise HTTPException(400, str(e))
+
+    upload_id = uuid.uuid4().hex
+    path = save_upload(settings.upload_dir, png, upload_id)
+    comfy_name = await comfy.upload_image(png, f"{upload_id}.png")
+    await db.execute(
+        "INSERT INTO uploads (id, path, comfy_name, width, height, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (upload_id, path, comfy_name, width, height, now()),
+    )
+    return {"id": upload_id, "width": width, "height": height,
+            "url": f"/api/uploads/{upload_id}/file"}
+
+
+@app.post("/api/uploads")
+async def create_upload(file: UploadFile = File(...),
+                        principal: Principal = Depends(get_principal),
+                        settings: Settings = Depends(get_settings),
+                        db: Database = Depends(get_db),
+                        comfy: ComfyClient = Depends(get_comfy)):
+    return await _record_upload(db, comfy, settings, await file.read())
+
+
+@app.post("/api/uploads/{upload_id}/mask")
+async def attach_mask(upload_id: str,
+                      file: UploadFile = File(...),
+                      principal: Principal = Depends(get_principal),
+                      settings: Settings = Depends(get_settings),
+                      db: Database = Depends(get_db),
+                      comfy: ComfyClient = Depends(get_comfy)):
+    """Attach a painted mask to an existing upload.
+
+    Scoped to the upload rather than standalone so the mask can be checked
+    against the exact dimensions of the image it was painted over -- a mask
+    that doesn't line up inpaints the wrong region, silently.
+    """
+    row = await db.fetch_one("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    if row is None:
+        raise HTTPException(404, "no such upload")
+    try:
+        png = normalise_mask(await file.read(), row["width"], row["height"])
+    except UploadRejected as e:
+        raise HTTPException(400, str(e))
+
+    path = save_upload(settings.upload_dir, png, f"{upload_id}.mask")
+    comfy_name = await comfy.upload_image(png, f"{upload_id}.mask.png")
+    await db.execute(
+        "UPDATE uploads SET mask_path = ?, mask_comfy_name = ? WHERE id = ?",
+        (path, comfy_name, upload_id),
+    )
+    return {"id": upload_id, "mask": True, "width": row["width"], "height": row["height"]}
+
+
+@app.get("/api/uploads/{upload_id}/file")
+async def upload_file(upload_id: str, mask: bool = False,
+                      principal: Principal = Depends(get_principal),
+                      db: Database = Depends(get_db)):
+    row = await db.fetch_one("SELECT path, mask_path FROM uploads WHERE id = ?", (upload_id,))
+    if row is None:
+        raise HTTPException(404, "no such upload")
+    path = Path(row["mask_path"] or "") if mask else Path(row["path"])
+    if not path.name or not path.exists():
+        raise HTTPException(410, "the file for this upload is gone from disk")
+    return FileResponse(path, media_type="image/png")
+
+
+# --------------------------------------------------------------------------- #
 # generation
 # --------------------------------------------------------------------------- #
 class GenerateRequest(BaseModel):
@@ -110,12 +190,23 @@ class GenerateRequest(BaseModel):
     cfg: float | None = None
     sampler: str | None = None
     scheduler: str | None = None
+    # Phase 2. `image_id` refers to an /api/uploads row; the graph never sees
+    # a path the browser chose, only the ComfyUI filename we recorded.
+    image_id: str | None = None
+    denoise: float | None = None
+    grow_mask: int | None = None
+    pad_left: int | None = None
+    pad_top: int | None = None
+    pad_right: int | None = None
+    pad_bottom: int | None = None
+    feathering: int | None = None
 
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest,
                    principal: Principal = Depends(get_principal),
                    reg: Registry = Depends(get_registry),
+                   db: Database = Depends(get_db),
                    qm: QueueManager = Depends(get_queue)):
     """Enqueue and return immediately.
 
@@ -127,11 +218,33 @@ async def generate(req: GenerateRequest,
     if workflow is None:
         raise HTTPException(400, f"unknown workflow: {req.workflow_id}")
 
-    params = workflow.resolve(req.model_dump(exclude_none=True))
+    raw = req.model_dump(exclude_none=True)
+    upload = None
+    if workflow.requires:
+        if not req.image_id:
+            raise HTTPException(400, f"{workflow.display} needs an image to work from")
+        upload = await db.fetch_one("SELECT * FROM uploads WHERE id = ?", (req.image_id,))
+        if upload is None:
+            raise HTTPException(404, "no such upload")
+        raw["image"] = upload["comfy_name"]
+        if "mask" in workflow.requires:
+            if not upload["mask_comfy_name"]:
+                raise HTTPException(400, "brush over the area you want changed first")
+            raw["mask"] = upload["mask_comfy_name"]
+
+    params = workflow.resolve(raw)
     if not params["prompt"]:
         raise HTTPException(400, "a prompt is required")
+    if workflow.kind == "outpaint" and not any(
+            params.get(f"pad_{s}") for s in ("left", "top", "right", "bottom")):
+        raise HTTPException(400, "choose at least one direction to extend into")
 
     job = await qm.submit(workflow, params)
+    if upload is not None:
+        await db.execute(
+            "UPDATE jobs SET input_image_path = ?, mask_path = ? WHERE id = ?",
+            (upload["path"], upload["mask_path"], job.id),
+        )
     return {"job_id": job.id, "position": qm.position_of(job.id), "params": job.params}
 
 

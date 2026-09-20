@@ -29,6 +29,14 @@ class Settings(BaseSettings):
     database_path: str = str(REPO_ROOT / "data" / "alchemyui.db")
     output_dir: str = str(REPO_ROOT / "data" / "outputs")
     workflows_dir: str = str(REPO_ROOT / "workflows")
+    upload_dir: str = str(REPO_ROOT / "data" / "uploads")
+
+    # --- uploads (Phase 2) -------------------------------------------------
+    upload_max_mb: float = 24.0
+    # A 6GB card will OOM long before it runs out of patience, and SDXL is
+    # trained at ~1024. Anything larger is scaled down on arrival; dimensions
+    # are then snapped to a multiple of 8, which the VAE requires.
+    upload_max_edge: int = 1536
 
     # --- identity ----------------------------------------------------------
     # Auth, if ever wanted, lives in oauth2-proxy in front (see deploy/). The

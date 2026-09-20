@@ -43,6 +43,20 @@ class ParamBinding:
     field: str
 
 
+# How each known input is coerced. Keeping this in one table is what lets a
+# new capability be a registry entry rather than a change to resolve().
+_TEXT_INPUTS = frozenset({"prompt", "negative"})
+_INT_INPUTS = frozenset({"steps", "pad_left", "pad_top", "pad_right", "pad_bottom",
+                         "grow_mask", "feathering"})
+_FLOAT_INPUTS = frozenset({"cfg", "denoise"})
+# Filenames inside ComfyUI's input/ directory, set by the upload step rather
+# than by the person -- passed through untouched.
+_REF_INPUTS = frozenset({"image", "mask"})
+
+# What kind of editor the browser should put in front of the person.
+_KINDS = ("txt2img", "img2img", "inpaint", "outpaint")
+
+
 @dataclass(frozen=True)
 class WorkflowInfo:
     key: str
@@ -50,6 +64,8 @@ class WorkflowInfo:
     template_name: str
     checkpoint: str
     blurb: str
+    kind: str                            # txt2img | img2img | inpaint | outpaint
+    requires: tuple[str, ...]            # "image", "mask" -- what the UI must collect first
     inputs: tuple[str, ...]
     params: dict[str, ParamBinding]
     defaults: dict[str, Any]
@@ -67,22 +83,27 @@ class WorkflowInfo:
         """Turn a request body into the full, clamped parameter set that will
         be both injected into the graph and stored on the job and image rows.
 
-        Everything the user did not send falls back to the registry defaults,
-        so a stored params_json is always complete enough to reproduce the run.
+        What the browser sends is a suggestion. Everything is defaulted from
+        the registry, clamped to `limits` and checked against `choices` here,
+        so a stored params_json is always complete enough to reproduce the run
+        and the graph can never be handed a value ComfyUI would refuse.
         """
         p: dict[str, Any] = {}
 
         p["prompt"] = (raw.get("prompt") or "").strip()
-        p["negative"] = raw.get("negative")
-        if p["negative"] is None:
-            p["negative"] = self.defaults.get("negative", "")
-        p["negative"] = str(p["negative"]).strip()
+        negative = raw.get("negative")
+        if negative is None:
+            negative = self.defaults.get("negative", "")
+        p["negative"] = str(negative).strip()
 
-        aspect = raw.get("aspect") or self.defaults.get("aspect")
-        if aspect not in self.aspects:
-            aspect = next(iter(self.aspects))
-        p["aspect"] = aspect
-        p["width"], p["height"] = self.aspects[aspect]
+        # Only workflows that size their own canvas take an aspect; img2img and
+        # inpaint inherit the source image's dimensions instead.
+        if self.aspects and "width" in self.params:
+            aspect = raw.get("aspect") or self.defaults.get("aspect")
+            if aspect not in self.aspects:
+                aspect = next(iter(self.aspects))
+            p["aspect"] = aspect
+            p["width"], p["height"] = self.aspects[aspect]
 
         seed = raw.get("seed")
         # A seed of 0 is a legitimate choice, so only None/"" means "surprise me".
@@ -90,15 +111,27 @@ class WorkflowInfo:
             seed = random.randint(0, MAX_SEED)
         p["seed"] = max(0, min(MAX_SEED, int(seed)))
 
-        p["steps"] = int(self._clamp("steps", raw.get("steps", self.defaults.get("steps", 25))))
-        p["cfg"] = float(self._clamp("cfg", raw.get("cfg", self.defaults.get("cfg", 7.0))))
-
-        for name in ("sampler", "scheduler"):
-            val = raw.get(name) or self.defaults.get(name)
-            allowed = self.choices.get(name)
-            if allowed and val not in allowed:
-                val = self.defaults.get(name, allowed[0])
-            p[name] = val
+        for name in self.inputs:
+            if name in ("prompt", "negative", "aspect", "seed"):
+                continue
+            value = raw.get(name)
+            if value is None or value == "":
+                value = self.defaults.get(name)
+            if value is None:
+                continue
+            if name in _REF_INPUTS:
+                p[name] = str(value)
+            elif name in _INT_INPUTS:
+                p[name] = int(self._clamp(name, value))
+            elif name in _FLOAT_INPUTS:
+                p[name] = round(float(self._clamp(name, value)), 4)
+            elif name in self.choices:
+                allowed = self.choices[name]
+                p[name] = value if value in allowed else self.defaults.get(name, allowed[0])
+            elif name in _TEXT_INPUTS:
+                p[name] = str(value).strip()
+            else:
+                p[name] = value
 
         p["checkpoint"] = self.checkpoint
         p["workflow_id"] = self.key
@@ -131,6 +164,8 @@ class WorkflowInfo:
             "display": self.display,
             "blurb": self.blurb,
             "checkpoint": self.checkpoint,
+            "kind": self.kind,
+            "requires": list(self.requires),
             "inputs": list(self.inputs),
             "defaults": dict(self.defaults),
             "limits": {k: list(v) for k, v in self.limits.items()},
@@ -154,6 +189,9 @@ class Registry:
 
     def all(self) -> list[WorkflowInfo]:
         return list(self._workflows.values())
+
+    def of_kind(self, kind: str) -> list[WorkflowInfo]:
+        return [w for w in self._workflows.values() if w.kind == kind]
 
     def checkpoints(self) -> list[str]:
         """Every checkpoint any entry needs -- what `validate --live` checks
@@ -241,6 +279,20 @@ def validate_entry(key: str, entry: dict, workflows_dir: Path) -> WorkflowInfo:
         if not aspects:
             raise RegistryError(f"{key}: binds width/height but defines no 'aspects'")
 
+    # A workflow that says it needs an image must actually bind one, or the
+    # UI would collect an upload that goes nowhere.
+    requires = tuple(entry.get("requires") or ())
+    for needed in requires:
+        if needed not in params:
+            raise RegistryError(
+                f"{key}: requires {needed!r} but binds no {needed!r} param, so the "
+                f"upload would never reach the graph"
+            )
+
+    kind = entry.get("kind", "txt2img")
+    if kind not in _KINDS:
+        raise RegistryError(f"{key}: unknown kind {kind!r} (want one of {', '.join(_KINDS)})")
+
     est = entry.get("est") or {}
     return WorkflowInfo(
         key=key,
@@ -248,6 +300,8 @@ def validate_entry(key: str, entry: dict, workflows_dir: Path) -> WorkflowInfo:
         template_name=entry["template"],
         checkpoint=entry.get("checkpoint", ""),
         blurb=entry.get("blurb", ""),
+        kind=kind,
+        requires=requires,
         inputs=tuple(entry.get("inputs", ())),
         params=params,
         defaults=dict(entry.get("defaults") or {}),

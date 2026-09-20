@@ -48,6 +48,22 @@ CREATE TABLE IF NOT EXISTS images (
 CREATE INDEX IF NOT EXISTS ix_images_created ON images(created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_images_job ON images(job_id);
 
+-- Uploaded source images and their masks (Phase 2: img2img, inpaint,
+-- outpaint). On disk under UPLOAD_DIR, never base64-in-DB. `comfy_name` is
+-- what the file is called inside ComfyUI's own input/ directory -- that is the
+-- string a LoadImage node takes, and the only reason we keep it.
+CREATE TABLE IF NOT EXISTS uploads (
+    id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk stem
+    path         TEXT NOT NULL,          -- our normalised copy
+    comfy_name   TEXT NOT NULL,          -- filename inside ComfyUI's input/
+    width        INTEGER NOT NULL,
+    height       INTEGER NOT NULL,
+    mask_path    TEXT,                   -- our copy of the mask, if one was drawn
+    mask_comfy_name TEXT,                -- the mask inside ComfyUI's input/
+    created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_uploads_created ON uploads(created_at DESC);
+
 -- Learned per-workflow durations: EWMA over observed runs, seeded from the
 -- registry's `est` block. Two separate figures, because a checkpoint swap
 -- (30s+) and the sampling itself scale with completely different things.

@@ -154,6 +154,81 @@ checked against ComfyUI 0.30.0's source rather than guessed.
   success — with the `/history` payload attached, because that is where the
   reason will be.
 
+## Editing (Phase 2)
+
+- **Three separate templates, not one parameterised graph**, as the spec
+  requires. img2img runs `VAEEncode`; inpaint and outpaint run
+  `VAEEncodeForInpaint`. Collapsing them would mean a graph with branches the
+  registry cannot express and a validator that cannot check them.
+- **White means replace, end to end.** That is what the person brushes, what
+  the exported PNG encodes, what `LoadImageMask` reads out of the **red**
+  channel, and what `VAEEncodeForInpaint` blanks. The `alpha` channel was
+  avoided deliberately: `LoadImage` returns `1.0 - alpha` as its mask, so
+  routing through alpha inverts the polarity and repaints everything *except*
+  what was brushed — a failure that looks like a model problem, not a wiring
+  one. There is a test asserting the red channel specifically.
+- **Outpaint is the inpaint path with a generated mask.**
+  `ImagePadForOutpaint` returns `(IMAGE, MASK)` with the new border already
+  marked, so the same encoder does both jobs and there is one less thing to
+  keep correct.
+- **Uploads are normalised on arrival**, not at generation time: converted to
+  RGB PNG, scaled so the longest edge fits `UPLOAD_MAX_EDGE` (1536 — a 6GB
+  card OOMs on a phone photo), and snapped to a multiple of 8. The snap
+  matters more than it looks: the VAE downscales by 8 and `VAEEncodeForInpaint`
+  silently *crops* a non-multiple, which would shift the image relative to the
+  mask painted over it.
+- **EXIF orientation is applied, not carried.** The mask is painted against
+  what the browser displayed; if the pixels still need rotating afterwards,
+  the mask lines up with nothing.
+- **The mask is scoped to its upload** (`POST /api/uploads/{id}/mask`) rather
+  than being a standalone file, so it can be checked against the exact
+  dimensions of the image it was drawn over.
+- **The mask is uploaded before the job is submitted.** A mask the server
+  rejects should stop the submit, not fail a generation that already holds
+  the GPU.
+- **Masks are binarised, not anti-aliased.** Half-lit edge pixels become a
+  partial noise mask and a smeared seam. `grow_mask_by` is what feathers the
+  join, deliberately and in one place.
+- **`grow_mask` defaults to 32, against ComfyUI's own 6.** Measured on real
+  output at ~1150px: at 6 there is a clearly visible ring around the mask,
+  because RealVisXL is not an inpainting checkpoint and refills the blanked
+  region with a slightly different colour balance. 32 reduces it markedly.
+  It cannot remove it entirely — that would need an inpainting checkpoint —
+  so the slider goes to 64 and the trade is explicit: a better seam costs more
+  of what you kept.
+- **Outpaint pads are capped at 512 a side and step in 8s.** Every padded
+  pixel is generated, so the cost is real and a 6GB card finds the ceiling
+  quickly. The UI draws the resulting canvas to scale, because four numbers do
+  not tell you that you just asked for a panorama.
+- **The denoise slider is labelled, not numbered.** 0.62 means nothing to most
+  people; "Strong — keeps the rough shapes" does. The range is the spec's
+  0.3–0.9: below that nothing visibly changes, above it the source stops
+  mattering and you may as well have generated from scratch.
+- **The time estimate accounts for denoise.** KSampler runs `steps × denoise`
+  of them, so quoting the full step count would overstate every img2img run.
+
+## The mask editor
+
+The hardest front-end piece in the project, per the spec. Plain Canvas API, no
+library.
+
+- **Strokes are stored as vectors in the source image's own pixel
+  coordinates**, not as bitmap snapshots. Undo is then exact and free, the
+  display canvas can be laid out at any size, and the export is always at the
+  image's true resolution. A snapshot stack would cost ~7MB per step at
+  1536×1152 and cap undo depth at a handful.
+- **One routine draws both the on-screen overlay and the exported mask**; only
+  the colours differ. That is what guarantees what you painted is what gets
+  replaced — there is no second implementation to drift out of sync.
+- The eraser is `destination-out`, and the export flattens onto black
+  afterwards so the red channel is never ambiguous where a stroke was erased.
+- `touch-action: none` on the canvas, or the browser scrolls the page instead
+  of letting you draw on a touchscreen.
+- Pointer events (not mouse events) with `setPointerCapture`, so a stroke that
+  leaves the canvas still ends cleanly, and pen/touch work for free.
+- A tap with no movement still leaves a dot — the stroke is closed against
+  itself rather than discarded.
+
 ## Identity
 
 - **There is no auth code, and no users table.** Single user, bound to

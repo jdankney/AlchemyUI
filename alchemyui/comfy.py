@@ -190,6 +190,31 @@ class ComfyClient:
             log.warning("free() failed: %s", e)
             return False
 
+    # -- send an image in (Phase 2) -------------------------------------------
+    async def upload_image(self, data: bytes, name: str, subfolder: str = "alchemyui") -> str:
+        """Put an image into ComfyUI's input/ and return the name a LoadImage
+        node should use.
+
+        `overwrite=true` keeps ComfyUI from inventing "name (1).png" on a
+        collision -- our names are uuid-stemmed, so a collision means the same
+        upload, and a silently renamed file would break the graph we already
+        built. The returned name carries the subfolder because that is what
+        LoadImage resolves against.
+        """
+        files = {"image": (name, data, "image/png")}
+        payload = {"overwrite": "true", "type": "input", "subfolder": subfolder}
+        try:
+            r = await self._client.post("/upload/image", files=files, data=payload, timeout=120.0)
+        except httpx.HTTPError as e:
+            raise ComfyError("ComfyUI is not reachable", detail=repr(e))
+        if r.status_code >= 400:
+            raise ComfyError(
+                f"ComfyUI rejected the upload (HTTP {r.status_code})", detail=r.text[:2000]
+            )
+        body = r.json()
+        sub = body.get("subfolder") or ""
+        return f"{sub}/{body['name']}" if sub else body["name"]
+
     # -- retrieve -------------------------------------------------------------
     async def history(self, prompt_id: str) -> dict:
         """Read once, on completion. Never polled while the WS is connected."""

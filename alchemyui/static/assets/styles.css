@@ -189,6 +189,62 @@ textarea.input { resize: vertical; min-height: 3.4rem; line-height: 1.5; }
   border-radius: 5px; padding: 1px 5px; font-size: 11px; color: var(--text-2);
 }
 
+/* ------------------------------------------------------ Phase 2: editing */
+.seg-modes { margin-bottom: 10px; }
+.seg-modes button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; }
+
+/* upload */
+.dropzone {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 26px 16px; margin-bottom: 10px; text-align: center;
+  border: 1.5px dashed var(--line-strong); border-radius: var(--r-lg);
+  color: var(--text-3); background: var(--ink-2);
+  transition: border-color .12s var(--ease), background .12s var(--ease);
+}
+.dropzone:hover, .dropzone.is-over { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.dropzone.is-busy { opacity: .6; pointer-events: none; }
+.dropzone .icon { width: 22px; height: 22px; }
+
+.upload-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+  padding: 8px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--ink-2);
+}
+.upload-row .thumb { width: 52px; height: 52px; object-fit: cover; border-radius: var(--r-sm); flex: none; }
+.upload-meta { min-width: 0; }
+
+/* mask editor -- the source image with a paintable overlay on top */
+.mask-editor { margin-bottom: 12px; }
+.mask-stage {
+  position: relative; width: 100%; max-height: 52vh; margin: 0 auto;
+  border-radius: var(--r-lg); overflow: hidden; background: var(--ink-2);
+  border: 1px solid var(--line);
+}
+.mask-stage img, .mask-canvas {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  -webkit-user-select: none; user-select: none;
+}
+.mask-stage img { object-fit: contain; pointer-events: none; }
+.mask-canvas { cursor: crosshair; touch-action: none; }   /* touch-action: the browser must not steal the drag */
+.mask-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; }
+.mask-size { min-width: 9rem; flex: 1; max-width: 16rem; }
+
+/* outpaint */
+.outpaint { margin-bottom: 12px; display: flex; flex-direction: column; gap: 12px; }
+.pad-preview { display: flex; justify-content: center; padding: 10px 0; }
+.pad-box {
+  position: relative; border-radius: var(--r-sm);
+  background: repeating-linear-gradient(45deg, var(--panel-2) 0 6px, var(--panel-3) 6px 12px);
+  border: 1px solid var(--accent-line);
+  transition: width .15s var(--ease), height .15s var(--ease);
+}
+.pad-orig { position: absolute; background: var(--accent); border-radius: 2px; opacity: .85; }
+
+/* denoise -- the label does the explaining, not the number */
+.denoise { margin-top: 10px; }
+.denoise input[type=range] { width: 100%; accent-color: var(--accent); }
+.denoise-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-4); }
+.denoise-label { font-size: 12px; color: var(--accent); padding-top: 2px; }
+
 /* ----------------------------------------------------------- gallery */
 .gallery { padding: 22px 0 60px; }
 .gallery-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -270,5 +326,7 @@ textarea.input { resize: vertical; min-height: 3.4rem; line-height: 1.5; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
   .grid-2 { grid-template-columns: 1fr; }
   .compose-tools { gap: 6px; }
+  .mask-stage { max-height: 40vh; }
+  .mask-size { max-width: none; }
   .seg button { padding: 5px 8px; font-size: 12px; }
 }
