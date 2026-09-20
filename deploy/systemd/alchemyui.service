@@ -1,0 +1,25 @@
+# ~/.config/systemd/user/alchemyui.service  (installed by deploy/install.sh,
+# which replaces @REPO@ with the absolute path of this checkout)
+#
+# The FastAPI app. Binds 127.0.0.1 only. It is the only thing that should ever
+# reach ComfyUI on 8188 -- that port has no auth and /prompt accepts arbitrary
+# graphs, so it must never be exposed to a browser.
+[Unit]
+Description=AlchemyUI (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+# --timeout-graceful-shutdown bounds uvicorn's own drain wait: an open
+# /api/events SSE connection never closes on its own, so without this uvicorn
+# waits on SIGTERM until systemd's TimeoutStopSec gives up and SIGKILLs it --
+# which still stops the service, but leaves it reported as "failed (Result:
+# timeout)" instead of a clean stop. 5s keeps this well under the stop timeout.
+ExecStart=@REPO@/.venv/bin/uvicorn alchemyui.app:app --host 127.0.0.1 --port @PORT@ --no-server-header --timeout-graceful-shutdown 5
+Restart=on-failure
+RestartSec=3
+# settings come from the gitignored .env in the working dir (pydantic-settings)
+
+[Install]
+WantedBy=default.target

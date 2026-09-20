@@ -1,0 +1,713 @@
+"""The queue -- the core of the project.
+
+Strict FIFO, exactly one generation at a time, on one GPU. The app keeps its
+OWN queue and submits a single prompt to ComfyUI at a time: ComfyUI's internal
+queue is not the source of truth, because we need real positions, honest ETAs
+and a cancel that actually aborts.
+
+    queued -> running -> completed | failed | cancelled
+
+Live state is pushed to every subscriber over SSE. Durations are learned per
+workflow (EWMA over observed runs, seeded from the registry's `est` block), so
+the ETA is measured rather than invented.
+
+Checkpoint-swap-aware ordering (spec section 7) has one seam, _pick_next(), and
+no implementation: Phase 1 ships a single checkpoint, so reordering would be
+untested dead code. Phase 5's model picker is what makes it real.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import enum
+import json
+import logging
+import uuid
+from dataclasses import dataclass, field
+
+from .comfy import ComfyClient, ComfyError, get_comfy
+from .config import Settings, get_settings
+from .db import Database, get_db, now
+from .registry import Registry, WorkflowInfo, get_registry
+from .storage import output_images, png_size, save_output
+
+log = logging.getLogger("alchemyui.queue")
+
+
+class JobState(enum.StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+TERMINAL = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+
+_RESIDENT_KEY = "resident_checkpoint"
+
+
+def new_job_id() -> str:
+    """Canonical lowercase hyphenated UUID -- ComfyUI validates the prompt_id
+    we supply against exactly that form (server.py: validate_job_id)."""
+    return str(uuid.uuid4())
+
+
+@dataclass
+class Job:
+    workflow_id: str
+    params: dict
+    id: str = field(default_factory=new_job_id)
+    state: JobState = JobState.QUEUED
+
+    created_at: float = field(default_factory=now)
+    started_at: float | None = None        # ComfyUI began executing this prompt
+    sampling_started_at: float | None = None  # first sampler step -- load ends here
+    finished_at: float | None = None
+
+    cold_start: bool = False
+    progress_value: int = 0
+    progress_max: int = 0
+
+    error_text: str | None = None
+    error_detail: str | None = None
+
+    images: list[dict] = field(default_factory=list)
+
+    _cancel: asyncio.Event = field(default_factory=asyncio.Event)
+    _finished: asyncio.Event = field(default_factory=asyncio.Event)
+    _done: asyncio.Event = field(default_factory=asyncio.Event)
+    _interrupted_upstream: bool = False
+
+    @property
+    def checkpoint(self) -> str:
+        return self.params.get("checkpoint", "")
+
+    @property
+    def steps(self) -> int:
+        return int(self.params.get("steps") or 0)
+
+    def public(self, position: int | None = None, eta_s: float | None = None) -> dict:
+        return {
+            "id": self.id,
+            "workflow_id": self.workflow_id,
+            "status": self.state.value,
+            "position": position,
+            "eta_s": round(eta_s, 1) if eta_s is not None else None,
+            "progress": {"value": self.progress_value, "max": self.progress_max},
+            "params": self.params,
+            "cold_start": self.cold_start,
+            "error_text": self.error_text,
+            "error_detail": self.error_detail,
+            "images": self.images,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+        }
+
+
+class QueueManager:
+    def __init__(self, db: Database, comfy: ComfyClient, registry: Registry, settings: Settings):
+        self.db = db
+        self.comfy = comfy
+        self.reg = registry
+        self.cfg = settings
+
+        self._pending: list[Job] = []
+        self._active: Job | None = None
+        self._by_id: dict[str, Job] = {}
+        self._wake = asyncio.Event()
+        self._subscribers: set[asyncio.Queue] = set()
+
+        # workflow_id -> [seconds_per_step, load_seconds]
+        self._stats: dict[str, list[float]] = {}
+        self._resident_checkpoint: str | None = None
+        self._comfy_connected = False
+        self._comfy_queue_remaining = 0
+
+        self._tasks: list[asyncio.Task] = []
+        self._bg: set[asyncio.Task] = set()  # fire-and-forget, kept referenced until done
+
+    # -- lifecycle ------------------------------------------------------------
+    async def start(self) -> None:
+        for w in self.reg.all():
+            self._stats[w.key] = [w.est_seconds_per_step, w.est_load_s]
+        for r in await self.db.fetch_all(
+            "SELECT workflow_id, ewma_seconds_per_step, ewma_load_seconds FROM workflow_stats"
+        ):
+            if r["workflow_id"] in self._stats:
+                self._stats[r["workflow_id"]] = [
+                    r["ewma_seconds_per_step"], r["ewma_load_seconds"]
+                ]
+
+        row = await self.db.fetch_one(
+            "SELECT value FROM runtime_state WHERE key = ?", (_RESIDENT_KEY,)
+        )
+        self._resident_checkpoint = row["value"] if row else None
+
+        await self._reconcile()
+
+        self._tasks = [
+            asyncio.create_task(self._ws_reader(), name="comfy-ws"),
+            asyncio.create_task(self._worker(), name="queue-worker"),
+        ]
+        log.info("queue started; %d pending, resident checkpoint = %s",
+                 len(self._pending), self._resident_checkpoint)
+
+    async def stop(self) -> None:
+        for t in self._tasks:
+            t.cancel()
+        for t in self._tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    async def _reconcile(self) -> None:
+        """Startup reconciliation (spec section 7).
+
+        Anything left `running` is unrecoverable -- either we restarted or
+        ComfyUI did, and either way that generation is gone. Mark it failed
+        with a message that says so. Pending jobs, by contrast, must survive:
+        they are reloaded in queue order and run as if nothing happened.
+        """
+        orphans = await self.db.fetch_all(
+            "SELECT id FROM jobs WHERE status = ?", (JobState.RUNNING.value,)
+        )
+        if orphans:
+            await self.db.execute(
+                "UPDATE jobs SET status = ?, error_text = ?, finished_at = ? WHERE status = ?",
+                (JobState.FAILED.value,
+                 "The backend restarted while this job was running, so it could not be recovered.",
+                 now(), JobState.RUNNING.value),
+            )
+            log.warning("reconciled %d orphaned running job(s) to failed", len(orphans))
+            # If only the app restarted, ComfyUI is still grinding away on a
+            # prompt whose result nobody will ever see. Both calls are keyed on
+            # the prompt_id and no-op if it isn't there, so this cannot touch
+            # anything else -- including work started from ComfyUI's own UI.
+            for r in orphans:
+                await self.comfy.interrupt(r["id"])
+                await self.comfy.drop_pending(r["id"])
+
+        rows = await self.db.fetch_all(
+            "SELECT * FROM jobs WHERE status = ? ORDER BY created_at", (JobState.QUEUED.value,)
+        )
+        for r in rows:
+            if self.reg.get(r["workflow_id"]) is None:
+                await self.db.execute(
+                    "UPDATE jobs SET status = ?, error_text = ?, finished_at = ? WHERE id = ?",
+                    (JobState.FAILED.value,
+                     f"Workflow {r['workflow_id']!r} is no longer in the registry.", now(), r["id"]),
+                )
+                continue
+            job = Job(
+                workflow_id=r["workflow_id"],
+                params=json.loads(r["params_json"]),
+                id=r["id"],
+                created_at=r["created_at"],
+            )
+            self._by_id[job.id] = job
+            self._pending.append(job)
+        if rows:
+            log.info("restored %d queued job(s) across the restart", len(self._pending))
+            self._wake.set()
+
+    # -- estimates ------------------------------------------------------------
+    def estimate(self, workflow_id: str, steps: int, cold: bool) -> float:
+        sps, load = self._stats.get(workflow_id, [2.0, 30.0])
+        return steps * sps + (load if cold else 0.0)
+
+    def _job_estimate(self, job: Job, assume_resident: str | None) -> float:
+        return self.estimate(job.workflow_id, job.steps, job.checkpoint != assume_resident)
+
+    def _remaining_for_active(self) -> float:
+        """Seconds left on the running job: prefer the real step count, fall
+        back to the estimate before the first step lands."""
+        job = self._active
+        if job is None:
+            return 0.0
+        sps, _ = self._stats.get(job.workflow_id, [2.0, 30.0])
+        if job.progress_max and job.progress_value:
+            return max(0.0, (job.progress_max - job.progress_value) * sps)
+        if job.sampling_started_at:
+            return max(0.0, job.steps * sps - (now() - job.sampling_started_at))
+        return self._job_estimate(job, self._resident_checkpoint)
+
+    def _etas(self) -> dict[str, float]:
+        """ETA per job id: the running job's remaining time, then each pending
+        job's own estimate stacked on top, accounting for swaps along the way."""
+        etas: dict[str, float] = {}
+        acc = self._remaining_for_active()
+        if self._active is not None:
+            etas[self._active.id] = acc
+        resident = self._active.checkpoint if self._active else self._resident_checkpoint
+        for j in self._pending:
+            acc += self._job_estimate(j, resident)
+            etas[j.id] = acc
+            resident = j.checkpoint
+        return etas
+
+    def _observe(self, job: Job) -> None:
+        """Fold a completed run into the per-workflow EWMAs.
+
+        Load and sampling are learned separately because they scale with
+        completely different things: a checkpoint swap costs 30s+ regardless of
+        step count, while sampling is linear in steps. The first sampler step
+        is the boundary between the two.
+        """
+        if not (job.started_at and job.finished_at and job.steps):
+            return
+        st = self._stats.setdefault(job.workflow_id, [2.0, 30.0])
+        a = self.cfg.ewma_alpha
+
+        sampling_from = job.sampling_started_at or job.started_at
+        # Sampling through save: an ETA should cover the whole job, not just
+        # the denoise loop, so VAE decode and the write are folded in here.
+        per_step = (job.finished_at - sampling_from) / job.steps
+        if per_step > 0:
+            st[0] = (1 - a) * st[0] + a * per_step
+
+        if job.cold_start and job.sampling_started_at:
+            observed_load = job.sampling_started_at - job.started_at
+            if observed_load > 0:
+                st[1] = (1 - a) * st[1] + a * observed_load
+
+        t = asyncio.create_task(self._persist_stats(job.workflow_id, st))
+        self._bg.add(t)
+        t.add_done_callback(self._bg.discard)
+
+    async def _persist_stats(self, workflow_id: str, st: list[float]) -> None:
+        await self.db.execute(
+            "INSERT INTO workflow_stats "
+            "  (workflow_id, ewma_seconds_per_step, ewma_load_seconds, samples, updated_at) "
+            "VALUES (?, ?, ?, 1, ?) "
+            "ON CONFLICT(workflow_id) DO UPDATE SET "
+            "  ewma_seconds_per_step = excluded.ewma_seconds_per_step, "
+            "  ewma_load_seconds = excluded.ewma_load_seconds, "
+            "  samples = workflow_stats.samples + 1, "
+            "  updated_at = excluded.updated_at",
+            (workflow_id, st[0], st[1], now()),
+        )
+
+    async def _set_resident(self, checkpoint: str | None) -> None:
+        """ComfyUI has no /running endpoint, so what is resident is tracked
+        from the last job we saw complete and persisted so a restart does not
+        start lying. It is only ever shown as a hint."""
+        if checkpoint == self._resident_checkpoint:
+            return
+        self._resident_checkpoint = checkpoint
+        await self.db.execute(
+            "INSERT INTO runtime_state (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (_RESIDENT_KEY, checkpoint or ""),
+        )
+
+    # -- submission / cancellation --------------------------------------------
+    async def submit(self, workflow: WorkflowInfo, params: dict) -> Job:
+        job = Job(workflow_id=workflow.key, params=params)
+        self._by_id[job.id] = job
+        self._pending.append(job)
+        await self._persist_job(job)
+        self._wake.set()
+        await self._broadcast()
+        log.info("job %s queued (workflow=%s pos=%d)", job.id, job.workflow_id, len(self._pending))
+        return job
+
+    async def cancel(self, job_id: str) -> bool:
+        job = self._by_id.get(job_id)
+        if job is None or job.state in TERMINAL:
+            return False
+
+        if job is self._active:
+            job._cancel.set()
+            # Targeted: ComfyUI no-ops if this prompt is not the running one,
+            # so we can never kill something started from its own UI.
+            await self.comfy.interrupt(job.id)
+            return True
+
+        if job in self._pending:
+            self._pending.remove(job)
+            job.state = JobState.CANCELLED
+            job.finished_at = now()
+            await self._persist_job(job)
+            job._done.set()
+            await self._broadcast()
+            await self._emit({"type": "job", "job": job.public()})
+            return True
+        return False
+
+    # -- snapshot / SSE fan-out -----------------------------------------------
+    def snapshot(self) -> dict:
+        etas = self._etas()
+        jobs = []
+        ahead = 0
+        if self._active is not None:
+            jobs.append(self._active.public(0, etas.get(self._active.id)))
+            ahead = 1
+        for i, j in enumerate(self._pending):
+            jobs.append(j.public(i + ahead, etas.get(j.id)))
+        return {
+            "type": "queue",
+            "jobs": jobs,
+            "depth": len(self._pending) + (1 if self._active else 0),
+            "resident_checkpoint": self._resident_checkpoint,
+            "comfy_connected": self._comfy_connected,
+            "ts": now(),
+        }
+
+    def position_of(self, job_id: str) -> int | None:
+        """How many jobs are ahead of this one. 0 means it is running, or is
+        about to be because nothing else holds the GPU.
+
+        Counting jobs-ahead rather than place-in-line is what lets the UI say
+        "2 ahead of you" literally. The first job into an empty queue is 0,
+        not 1: there is nobody in front of it.
+        """
+        if self._active and self._active.id == job_id:
+            return 0
+        ahead = 1 if self._active else 0
+        for i, j in enumerate(self._pending):
+            if j.id == job_id:
+                return i + ahead
+        return None
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        self._subscribers.add(q)
+        q.put_nowait(self.snapshot())
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self._subscribers.discard(q)
+
+    async def _emit(self, event: dict) -> None:
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                # A subscriber this far behind is a dead connection; the
+                # browser will reconnect and recover state from /api/jobs.
+                self._subscribers.discard(q)
+
+    async def _broadcast(self) -> None:
+        await self._emit(self.snapshot())
+
+    # -- worker ---------------------------------------------------------------
+    def _pick_next(self) -> Job:
+        """Choose the next job to run.
+
+        Strict FIFO today. This is the single place checkpoint-swap-aware
+        ordering would live (spec section 7): sort pending jobs so those
+        sharing a checkpoint run consecutively, with a capped reordering
+        window so nothing starves. Phase 1 has one checkpoint, so there is
+        nothing to reorder and the clever version would be untested.
+        """
+        return self._pending.pop(0)
+
+    async def _worker(self) -> None:
+        while True:
+            while not self._pending:
+                self._wake.clear()
+                await self._wake.wait()
+            job = self._pick_next()
+            if job.state in TERMINAL:
+                continue
+
+            self._active = job
+            job.state = JobState.RUNNING
+            job.cold_start = job.checkpoint != self._resident_checkpoint
+            await self._persist_job(job)
+            await self._broadcast()
+            await self._emit({"type": "job", "job": job.public(0)})
+
+            shutting_down = False
+            try:
+                await self._run(job)
+            except ComfyError as e:
+                job.state = JobState.FAILED
+                job.error_text = e.message
+                job.error_detail = e.detail
+            except asyncio.CancelledError:
+                # The app is going down with this job in flight. Deliberately
+                # leave the row `running` and finalise nothing: the generation
+                # did not survive, and _reconcile() on the next boot is the
+                # only thing that knows that. Claiming success here would
+                # record an image that never existed.
+                shutting_down = True
+                raise
+            except Exception as e:  # noqa: BLE001
+                log.exception("job %s crashed", job.id)
+                job.state = JobState.FAILED
+                job.error_text = "The app hit an unexpected error handling this job."
+                job.error_detail = repr(e)
+            finally:
+                self._active = None
+                if not shutting_down:
+                    if job.finished_at is None:
+                        job.finished_at = now()
+                    if job.state not in TERMINAL:
+                        job.state = JobState.COMPLETED
+                    await self._persist_job(job)
+                    job._done.set()
+                    await self._emit({"type": "job", "job": job.public()})
+                    await self._broadcast()
+
+    async def _run(self, job: Job) -> None:
+        workflow = self.reg.require(job.workflow_id)
+        graph = workflow.build_graph(job.params)
+
+        # We mint the prompt_id, so the WS relay can key on it from this
+        # moment -- no race against the POST response coming back.
+        await self.comfy.submit(graph, job.id)
+
+        budget = self.cfg.job_start_timeout_s + 10 * max(
+            1.0, self._job_estimate(job, self._resident_checkpoint)
+        )
+        finished = asyncio.create_task(job._finished.wait())
+        cancelled = asyncio.create_task(job._cancel.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {finished, cancelled}, timeout=budget, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                job.state = JobState.FAILED
+                job.error_text = (
+                    f"ComfyUI did not finish this job within {round(budget)}s. "
+                    "It may be stuck, or busy with work submitted from its own interface."
+                )
+                await self.comfy.interrupt(job.id)
+                await self.comfy.drop_pending(job.id)
+                return
+
+            if cancelled in done and not job._finished.is_set():
+                # /interrupt already went out from cancel(); give ComfyUI a
+                # moment to unwind and confirm before we call it cancelled.
+                await self.comfy.drop_pending(job.id)
+                try:
+                    await asyncio.wait_for(job._finished.wait(), timeout=30.0)
+                except TimeoutError:
+                    log.warning("job %s: no interrupt confirmation from ComfyUI", job.id)
+        finally:
+            finished.cancel()
+            cancelled.cancel()
+
+        job.finished_at = now()
+
+        if job._cancel.is_set() or job._interrupted_upstream:
+            job.state = JobState.CANCELLED
+            # A partial run still leaves the checkpoint resident.
+            await self._set_resident(job.checkpoint)
+            return
+
+        if job.error_text:
+            job.state = JobState.FAILED
+            await self._set_resident(job.checkpoint)
+            return
+
+        # A run can still fail at this point (no image came back), so _collect
+        # reports rather than the caller assuming success.
+        if await self._collect(job, workflow):
+            job.state = JobState.COMPLETED
+            self._observe(job)
+        else:
+            job.state = JobState.FAILED
+        await self._set_resident(job.checkpoint)
+
+    async def _collect(self, job: Job, workflow: WorkflowInfo) -> bool:
+        """Read /history once, copy the images into app-owned storage.
+
+        Returns False if the run produced nothing to show.
+
+        This is the only /history call for a job: while the WebSocket is
+        connected it carries everything, and polling would just add load to a
+        machine that is busy with a GPU.
+        """
+        history = await self.comfy.history(job.id)
+        descriptors = output_images(history, workflow.output_node)
+        if not descriptors:
+            job.error_text = "The workflow finished but produced no image."
+            job.error_detail = json.dumps(history, indent=2)[:8000]
+            return False
+
+        params_json = json.dumps(job.params)
+        for d in descriptors:
+            data = await self.comfy.view(
+                d.get("filename", ""), d.get("subfolder", ""), d.get("type", "output")
+            )
+            image_id, path = save_output(
+                self.cfg.output_dir, job.id, d.get("filename", "image.png"), data
+            )
+            width, height = png_size(data)
+            ts = now()
+            await self.db.execute(
+                "INSERT INTO images (id, job_id, filename, path, width, height, seed, "
+                "  workflow_id, params_json, favorite, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,0,?)",
+                (image_id, job.id, d.get("filename", ""), path, width, height,
+                 job.params.get("seed"), job.workflow_id, params_json, ts),
+            )
+            row = {
+                "id": image_id, "job_id": job.id, "width": width, "height": height,
+                "seed": job.params.get("seed"), "workflow_id": job.workflow_id,
+                "params": job.params, "favorite": False, "created_at": ts,
+                "url": f"/api/images/{image_id}/file",
+            }
+            job.images.append(row)
+            await self._emit({"type": "image", "image": row})
+        return True
+
+    # -- ComfyUI WebSocket relay ----------------------------------------------
+    async def _ws_reader(self) -> None:
+        """One socket for the app's lifetime; frames dispatched by prompt_id."""
+        async for msg in self.comfy.watch():
+            try:
+                await self._handle_ws(msg)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- a bad frame must not kill the relay
+                log.exception("failed handling comfy ws message %r", msg.get("type"))
+
+    async def _handle_ws(self, msg: dict) -> None:
+        t = msg.get("type")
+        d = msg.get("data") or {}
+
+        if t == "_ws_connected":
+            self._comfy_connected = True
+            await self._broadcast()
+            return
+        if t == "_ws_disconnected":
+            self._comfy_connected = False
+            await self._broadcast()
+            return
+        if t == "status":
+            info = ((d.get("status") or {}).get("exec_info") or {})
+            self._comfy_queue_remaining = info.get("queue_remaining", 0)
+            return
+
+        job = self._by_id.get(d.get("prompt_id") or "")
+        if job is None:
+            return
+
+        if t == "execution_start":
+            job.started_at = now()
+            await self._persist_job(job)
+            await self._broadcast()
+
+        elif t in ("progress_state", "progress"):
+            if self._apply_progress(job, t, d):
+                await self._emit({
+                    "type": "progress",
+                    "job_id": job.id,
+                    "value": job.progress_value,
+                    "max": job.progress_max,
+                    "eta_s": round(self._remaining_for_active(), 1),
+                    "started_at": job.started_at,
+                })
+
+        elif t == "executing":
+            # node == null means this prompt is finished.
+            if d.get("node") is None:
+                job._finished.set()
+
+        elif t == "execution_success":
+            job._finished.set()
+
+        elif t == "execution_interrupted":
+            job._interrupted_upstream = True
+            job._finished.set()
+
+        elif t == "execution_error":
+            node = d.get("node_type") or d.get("node_id")
+            message = d.get("exception_message") or "ComfyUI raised an error"
+            job.error_text = f"{node}: {message}" if node else message
+            # The traceback is kept verbatim: on a GTX 16-series card, black or
+            # NaN output is a precision problem, not an app bug, and only the
+            # real trace tells the two apart.
+            job.error_detail = json.dumps(d, indent=2)[:8000]
+            log.error("execution_error for job %s: %s", job.id, job.error_detail)
+            job._finished.set()
+
+    def _apply_progress(self, job: Job, kind: str, d: dict) -> bool:
+        """Update a job's step counters. Returns True if anything changed.
+
+        ComfyUI 0.30 sends `progress_state` -- a map of every active node's
+        progress -- and no longer sends the flat `progress` message the spec
+        describes. We read the registry's declared sampler node out of that
+        map, and keep a legacy branch so an older ComfyUI still drives the bar.
+        """
+        value = max_ = None
+        if kind == "progress":
+            value, max_ = d.get("value"), d.get("max")
+        else:
+            nodes = d.get("nodes") or {}
+            workflow = self.reg.get(job.workflow_id)
+            entry = nodes.get(workflow.progress_node) if workflow else None
+            if entry is None:
+                # No entry for the sampler yet (or a template whose real work
+                # happens elsewhere): follow whichever node has the most steps.
+                candidates = [n for n in nodes.values() if (n.get("max") or 0) > 1]
+                entry = max(candidates, key=lambda n: n.get("max") or 0, default=None)
+            if entry is not None:
+                value, max_ = entry.get("value"), entry.get("max")
+
+        if value is None or max_ is None:
+            return False
+        value, max_ = int(value), int(max_)
+
+        # ComfyUI reports a 0/1 marker for any node that is merely *running*
+        # -- the checkpoint loader, the text encoders, and the sampler itself
+        # before it starts stepping. Only the sampler has real steps, so a max
+        # of 1 on a job asking for more than one step is a marker, not
+        # progress; showing it would flash "step 0 of 1" before the real bar.
+        if max_ <= 1 and job.steps > 1:
+            return False
+
+        if (value, max_) == (job.progress_value, job.progress_max):
+            return False
+
+        job.progress_value, job.progress_max = value, max_
+        if value >= 1 and job.sampling_started_at is None:
+            # First real step: everything before this was checkpoint load and
+            # text encode, which is exactly the split the EWMA wants.
+            job.sampling_started_at = now()
+        return True
+
+    # -- persistence ----------------------------------------------------------
+    async def _persist_job(self, job: Job) -> None:
+        await self.db.execute(
+            "INSERT INTO jobs (id, workflow_id, status, prompt_id, queue_position, params_json, "
+            "  input_image_path, mask_path, error_text, error_detail, checkpoint, steps, "
+            "  created_at, started_at, finished_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "  status=excluded.status, queue_position=excluded.queue_position, "
+            "  error_text=excluded.error_text, error_detail=excluded.error_detail, "
+            "  started_at=excluded.started_at, finished_at=excluded.finished_at",
+            (job.id, job.workflow_id, job.state.value, job.id, self.position_of(job.id),
+             json.dumps(job.params), None, None, job.error_text, job.error_detail,
+             job.checkpoint, job.steps, job.created_at, job.started_at, job.finished_at),
+        )
+
+
+_qm: QueueManager | None = None
+
+
+def get_queue() -> QueueManager:
+    if _qm is None:
+        raise RuntimeError("queue not started")
+    return _qm
+
+
+async def start_queue() -> QueueManager:
+    global _qm
+    _qm = QueueManager(get_db(), get_comfy(), get_registry(), get_settings())
+    await _qm.start()
+    return _qm
+
+
+async def stop_queue() -> None:
+    global _qm
+    if _qm is not None:
+        await _qm.stop()
+        _qm = None

@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "_comment": [
+    "The workflow registry. A capability is an entry here, not code: build the",
+    "graph in ComfyUI, export it with Save (API Format) into this directory,",
+    "add an entry, restart. No backend changes.",
+    "",
+    "Node IDs are brittle -- they change if a graph is rebuilt in the editor --",
+    "so every template is versioned in its filename and every binding below is",
+    "checked against the template at boot. A mismatch fails loudly at startup,",
+    "never silently at generation time. Run `alchemyui validate` to check by",
+    "hand, or `alchemyui validate --live` to also ask a running ComfyUI whether",
+    "the node classes and checkpoints actually exist."
+  ],
+
+  "workflows": {
+    "txt2img-sdxl": {
+      "display": "Generate (SDXL)",
+      "template": "sdxl_txt2img.v1.api.json",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "blurb": "Photorealistic, 1024px native.",
+
+      "inputs": ["prompt", "negative", "aspect", "seed", "steps", "cfg", "sampler", "scheduler"],
+
+      "params": {
+        "prompt":     { "node": "6", "field": "text" },
+        "negative":   { "node": "7", "field": "text" },
+        "width":      { "node": "5", "field": "width" },
+        "height":     { "node": "5", "field": "height" },
+        "seed":       { "node": "3", "field": "seed" },
+        "steps":      { "node": "3", "field": "steps" },
+        "cfg":        { "node": "3", "field": "cfg" },
+        "sampler":    { "node": "3", "field": "sampler_name" },
+        "scheduler":  { "node": "3", "field": "scheduler" },
+        "checkpoint": { "node": "4", "field": "ckpt_name" }
+      },
+
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "aspect": "1:1"
+      },
+
+      "limits": {
+        "steps": [1, 60],
+        "cfg": [1.0, 15.0]
+      },
+
+      "choices": {
+        "sampler": ["dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "euler", "euler_ancestral", "ddim", "uni_pc"],
+        "scheduler": ["karras", "normal", "simple", "sgm_uniform", "exponential", "beta"]
+      },
+
+      "aspects": {
+        "1:1":  [1024, 1024],
+        "3:4":  [896, 1152],
+        "4:3":  [1152, 896],
+        "9:16": [768, 1344],
+        "16:9": [1344, 768]
+      },
+
+      "progress_node": "3",
+      "output_node": "9",
+
+      "_est_note": "Seeds the ETA until real runs are observed, then an EWMA takes over. seconds_per_step is measured on a GTX 1660 Ti Mobile (6GB, --fp8_e4m3fn-unet): SDXL 1024x1024 x25 steps = ~131s wall. load_s is deliberately conservative -- an observed 3.8s was a page-cache-warm read, not a cold one.",
+      "est": { "seconds_per_step": 5.25, "load_s": 35 }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+# secrets / local config
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# runtime data -- the database and every generated image
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# personal notes (engineering log, anything not meant to ship)
+docs/local/
