@@ -152,7 +152,7 @@ def test_editing_workflows_bind_what_they_claim_to_require():
 
 def test_requires_without_a_binding_is_rejected():
     """Otherwise the UI collects an upload that never reaches the graph."""
-    with pytest.raises(RegistryError, match="binds no 'image' param"):
+    with pytest.raises(RegistryError, match="nothing in the graph consumes it"):
         validate_entry("bad", _entry(requires=["image"]), WORKFLOWS)
 
 

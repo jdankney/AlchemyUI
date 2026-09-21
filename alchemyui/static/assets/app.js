@@ -42,6 +42,7 @@ const ICONS = {
   sparkle: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z',
   gem: 'M6 3h12l4 6-10 12L2 9l4-6zM2 9h20M12 21L8 9l4-6 4 6-4 12',
   edit: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z',
+  face: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM8.5 10h.01M15.5 10h.01M8.5 15a5 5 0 0 0 7 0',
   stop: 'M7 7h10v10H7z',
   x: 'M18 6L6 18M6 6l12 12',
   chevron: 'M6 9l6 6 6-6',
@@ -93,7 +94,13 @@ const S = {
     denoise: null, grow_mask: null, feathering: null,          // Phase 2
     scale_by: null, refine: null, refine_steps: null,          // Phase 3
     face_denoise: null, face_guide: null,
+    face_weight: null, face_weight_v2: null,                   // Phase 4
+    face_start: null, face_end: null, lora_name: '', lora_strength: null,
   },
+  refs: [],               // every reference face uploaded so far
+  pickedRefs: [],         // the ids going into the next likeness job
+  refUploading: false,
+  loras: [],              // personal LoRAs, FaceID's own filtered out
   hq: false,              // the quality chain, on the modes that offer it
   seedLocked: false,
   advancedOpen: false,
@@ -250,6 +257,7 @@ const MODES = [
   ['inpaint',  'Paint over', 'brush'],
   ['outpaint', 'Extend', 'expand'],
   ['enhance',  'Enhance', 'gem'],
+  ['likeness', 'Likeness', 'face'],
 ];
 
 function modeControl() {
@@ -281,11 +289,13 @@ function composer() {
   const f = S.form;
   const needsImage = (w.requires || []).includes('image');
   const needsMask = (w.requires || []).includes('mask');
+  const needsRefs = (w.requires || []).includes('references');
 
   return h('div', { class: 'composer' },
     modeControl(),
     h('form', { class: 'compose-card', onsubmit: submit },
       needsImage ? uploadZone(w) : null,
+      needsRefs ? referenceStrip(w) : null,
       needsMask && S.upload ? maskEditor() : null,
       w.kind === 'outpaint' && S.upload ? outpaintControls() : null,
 
@@ -305,9 +315,12 @@ function composer() {
         h('div', { class: 'spacer' }),
         h('button', {
           type: 'submit', class: 'btn btn-primary',
-          disabled: S.submitting || !S.comfyConnected || (needsImage && !S.upload),
+          disabled: S.submitting || !S.comfyConnected || (needsImage && !S.upload)
+            || (needsRefs && !S.pickedRefs.length),
           title: !S.comfyConnected ? 'ComfyUI is not reachable'
-            : needsImage && !S.upload ? 'Add an image first' : 'Generate (Ctrl+Enter)',
+            : needsImage && !S.upload ? 'Add an image first'
+            : needsRefs && !S.pickedRefs.length ? 'Add a reference photo first'
+            : 'Generate (Ctrl+Enter)',
         }, icon('sparkle', 'icon-sm'), submitLabel(w))),
 
       h('details', {
@@ -344,6 +357,7 @@ function composer() {
                 f.feathering ?? w.defaults.feathering, v => { S.form.feathering = v; },
                 v => v + ' px') : null,
               w.inputs.includes('scale_by') ? chainFields(w) : null,
+              w.kind === 'likeness' ? likenessFields(w) : null,
               h('div', { class: 'grid-2' },
                 selectField('sampler', 'Sampler', w.choices.sampler || [], f.sampler ?? w.defaults.sampler),
                 selectField('scheduler', 'Scheduler', w.choices.scheduler || [], f.scheduler ?? w.defaults.scheduler)),
@@ -412,7 +426,8 @@ const promptPlaceholder = w =
   : w.kind === 'img2img' ? 'Describe what the image should become…'
   : 'Describe the image you want…';
 const submitLabel = w =>
-  w.kind === 'enhance' ? 'Enhance'
+  w.kind === 'likeness' ? 'Generate'
+  : w.kind === 'enhance' ? 'Enhance'
   : w.kind === 'inpaint' ? 'Repaint' : w.kind === 'outpaint' ? 'Extend'
   : w.kind === 'img2img' ? 'Transform' : 'Generate';
 
@@ -613,6 +628,140 @@ function exportMask() {
   fctx.fillRect(0, 0, flat.width, flat.height);
   fctx.drawImage(c, 0, 0);
   return new Promise(res => flat.toBlob(res, 'image/png'));
+}
+
+/* --------------------------------------------------------- reference faces */
+// Each reference is checked and squared off the moment it is added, so by the
+// time anything is generated every one of them is known to contain a face and
+// to be exactly the same size. That is what keeps InsightFace from killing the
+// whole batch, and ImageBatch from cropping a face out of the later ones.
+function referenceStrip(w) {
+  const max = w.max_references || 4;
+  const pick = () => document.getElementById('ref-input').click();
+  return h('div', { class: 'refs' },
+    h('div', { class: 'refs-head' },
+      icon('face', 'icon-sm'),
+      h('strong', {}, 'Reference photos'),
+      h('span', { class: 'small faint' },
+        S.pickedRefs.length ? `${S.pickedRefs.length} of ${max} selected`
+          : `add up to ${max} photos of the same face`),
+      h('div', { class: 'spacer' }),
+      S.refUploading ? h('span', { class: 'small faint' }, 'Checking for a face…') : null),
+
+    h('div', { class: 'ref-list' },
+      S.refs.map(r => refThumb(r, max)),
+      h('button', {
+        type: 'button', class: 'ref-add', title: 'Add a reference photo',
+        disabled: S.refUploading, onclick: pick,
+      }, icon('plus'), h('span', { class: 'small' }, 'Add'))),
+
+    h('input', {
+      type: 'file', id: 'ref-input', hidden: true, multiple: true,
+      accept: 'image/png,image/jpeg,image/webp',
+      onchange: async e => {
+        const files = [...e.target.files]; e.target.value = '';
+        await addReferences(files);
+      },
+    }),
+    h('div', { class: 'small faint' },
+      'Several angles of the same face work better than one. Each photo is '
+      + 'cropped square around the face before it is used.'));
+}
+
+function refThumb(r, max) {
+  const picked = S.pickedRefs.includes(r.id);
+  const atLimit = !picked && S.pickedRefs.length >= max;
+  return h('div', {
+    class: 'ref' + (picked ? ' is-picked' : '') + (atLimit ? ' is-full' : ''),
+    role: 'button', tabindex: 0,
+    title: atLimit ? `Already using ${max} photos` :
+      `${r.label || 'reference'} — face ${r.face_px}px, confidence ${r.face_score}`
+      + (r.faces_found > 1 ? ` (${r.faces_found} faces found, used the largest)` : ''),
+    onclick: () => toggleRef(r.id, max),
+    onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRef(r.id, max); } },
+  },
+    h('img', { src: r.url, alt: r.label || 'Reference face' }),
+    picked ? h('span', { class: 'tick' }, String(S.pickedRefs.indexOf(r.id) + 1)) : null,
+    r.faces_found > 1 ? h('span', { class: 'warn-dot', title: `${r.faces_found} faces found` }, '!') : null,
+    h('button', {
+      class: 'del', type: 'button', 'aria-label': 'Remove reference',
+      onclick: e => { e.stopPropagation(); removeRef(r.id); },
+    }, icon('x', 'icon-sm')));
+}
+
+function toggleRef(id, max) {
+  const i = S.pickedRefs.indexOf(id);
+  if (i >= 0) S.pickedRefs.splice(i, 1);
+  else if (S.pickedRefs.length < max) S.pickedRefs.push(id);
+  else { toast(`That workflow takes at most ${max} reference photos.`); return; }
+  render();
+}
+
+async function addReferences(files) {
+  if (!files.length) return;
+  S.refUploading = true; render();
+  const max = workflow()?.max_references || 4;
+  for (const file of files) {
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch('/api/references', { method: 'POST', body: fd });
+      if (!r.ok) throw await err(r);
+      const ref = await r.json();
+      S.refs.unshift(ref);
+      if (S.pickedRefs.length < max) S.pickedRefs.push(ref.id);
+      if (ref.faces_found > 1) {
+        toast(`${ref.label}: ${ref.faces_found} faces found — used the largest.`);
+      }
+    } catch (e) {
+      // Named, one at a time: the whole point is that a bad photo is rejected
+      // here rather than taking a six-minute job down with it.
+      toast(e.message, true);
+    }
+  }
+  S.refUploading = false; render();
+}
+
+async function removeRef(id) {
+  try { await api.del('/api/references/' + id); } catch (e) { toast(e.message, true); return; }
+  S.refs = S.refs.filter(r => r.id !== id);
+  S.pickedRefs = S.pickedRefs.filter(x => x !== id);
+  render();
+}
+
+// The two FaceID strengths, plus the personal-LoRA slot. Both weights are
+// exposed because they trade off differently, which is why the spec asks for
+// sliders rather than one number.
+function likenessFields(w) {
+  const f = S.form;
+  const loraOn = !!f.lora_name;
+  return [
+    sliderField('face_weight', 'Likeness strength', w.limits.face_weight || [0, 1.5], 0.05,
+      f.face_weight ?? (loraOn ? 0.45 : w.defaults.face_weight),
+      v => { S.form.face_weight = v; }, v => v.toFixed(2)),
+    sliderField('face_weight_v2', 'Face detail strength (v2)',
+      w.limits.face_weight_v2 || [0, 2], 0.05,
+      f.face_weight_v2 ?? w.defaults.face_weight_v2,
+      v => { S.form.face_weight_v2 = v; }, v => v.toFixed(2)),
+    sliderField('face_end', 'Stop applying at', w.limits.face_end || [0, 1], 0.05,
+      f.face_end ?? w.defaults.face_end, v => { S.form.face_end = v; },
+      v => Math.round(v * 100) + '% through'),
+    h('div', { class: 'field' },
+      h('label', { for: 'lora_name' }, 'Personal LoRA (optional)'),
+      h('select', {
+        id: 'lora_name', class: 'select',
+        onchange: e => { S.form.lora_name = e.target.value; S.form.face_weight = null; render(); },
+      },
+        h('option', { value: '', selected: !loraOn }, S.loras.length ? 'None' : 'None available'),
+        S.loras.map(n => h('option', { value: n, selected: n === f.lora_name }, n)))),
+    loraOn ? sliderField('lora_strength', 'LoRA strength',
+      w.limits.lora_strength || [0, 1.5], 0.05,
+      f.lora_strength ?? w.defaults.lora_strength,
+      v => { S.form.lora_strength = v; }, v => v.toFixed(2)) : null,
+    loraOn ? h('div', { class: 'small', style: 'color:var(--warn)' },
+      'A LoRA and FaceID both carry identity and fight at full strength — '
+      + 'likeness has been dialled back to 0.45. Raise it if the face drifts.') : null,
+  ];
 }
 
 /* ------------------------------------------------------ outpaint controls */
@@ -1016,6 +1165,7 @@ async function submit(e) {
 
   const needsImage = (w.requires || []).includes('image');
   const needsMask = (w.requires || []).includes('mask');
+  const needsRefs = (w.requires || []).includes('references');
   if (needsImage && !S.upload) { toast('Add an image first.', true); return; }
   if (needsMask && !S.mask.strokes.length) {
     toast('Brush over the area you want changed.', true); return;
@@ -1037,6 +1187,13 @@ async function submit(e) {
     if (w.inputs.includes(k)) body[k] = f[k] ?? w.defaults[k];
   }
   if (needsImage) body.image_id = S.upload.id;
+  if (w.kind === 'likeness') {
+    body.reference_ids = [...S.pickedRefs];
+    for (const k of ['face_weight', 'face_weight_v2', 'face_start', 'face_end', 'lora_strength']) {
+      if (f[k] != null) body[k] = f[k];
+    }
+    if (f.lora_name) body.lora_name = f.lora_name;
+  }
   if (w.kind === 'outpaint') {
     Object.assign(body, {
       pad_left: S.pads.left, pad_top: S.pads.top,
@@ -1129,6 +1286,14 @@ async function boot() {
   S.mode = byKind('txt2img') ? 'txt2img' : (S.workflows[0]?.kind || 'txt2img');
   render();
   focusPrompt();
+
+  try {
+    const [refs, loras] = await Promise.all([
+      api.get('/api/references'), api.get('/api/loras'),
+    ]);
+    S.refs = refs.references;
+    S.loras = loras.loras;
+  } catch { /* the likeness mode will just start empty */ }
 
   await recoverState();
   connectEvents();

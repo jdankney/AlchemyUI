@@ -45,6 +45,22 @@ class Settings(BaseSettings):
     # so the chain degrades to "less upscaling" instead of "failed".
     hq_max_edge: int = 1600
 
+    # --- reference faces (Phase 4) -----------------------------------------
+    # InsightFace's models, reused from ComfyUI rather than downloaded twice.
+    insightface_root: str = str(Path.home() / "ComfyUI" / "models" / "insightface")
+    face_det_size: int = 640
+    # Every reference is normalised to this square size, which is what stops
+    # ImageBatch rescaling and centre-cropping the second reference onwards.
+    reference_size: int = 768
+    # How much context around the face to keep: FaceID wants head and shoulders,
+    # not a tight box.
+    reference_margin: float = 2.2
+    reference_min_face_px: int = 64
+    max_references: int = 4
+    # FaceID weight used when a personal LoRA is also active. The spec's
+    # 0.4-0.5: both encode identity, and at full strength they fight.
+    lora_face_weight: float = 0.45
+
     # --- identity ----------------------------------------------------------
     # Auth, if ever wanted, lives in oauth2-proxy in front (see deploy/). The
     # app only ever trusts forwarded headers -- or a fake identity in dev.
@@ -60,6 +76,13 @@ class Settings(BaseSettings):
     job_start_timeout_s: float = 900.0
     # Weight of each new observation in the per-workflow duration EWMA.
     ewma_alpha: float = 0.3
+
+    # Checkpoint-swap-aware ordering. A swap costs 30s+, so a job whose model
+    # is already loaded may jump ahead -- but only within this many places,
+    # and only until something has been passed over this many times. With a
+    # single checkpoint in play neither setting does anything.
+    queue_reorder_window: int = 6
+    queue_max_skips: int = 3
 
     # ----------------------------------------------------------------------
     @property

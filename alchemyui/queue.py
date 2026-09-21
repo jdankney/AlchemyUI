@@ -66,6 +66,7 @@ class Job:
     finished_at: float | None = None
 
     cold_start: bool = False
+    skips: int = 0                # times this job was passed over for a swap
     progress_value: int = 0
     progress_max: int = 0
     stage_index: int = 0          # which sampling pass of a multi-stage graph
@@ -136,16 +137,35 @@ class QueueManager:
         self._bg: set[asyncio.Task] = set()  # fire-and-forget, kept referenced until done
 
     # -- lifecycle ------------------------------------------------------------
+    def _stats_key(self, workflow_id: str, checkpoint: str) -> str:
+        """Timings are per workflow *and* per checkpoint: SD1.5 is roughly four
+        times faster than SDXL, so one average across both would be wrong for
+        each of them."""
+        return f"{workflow_id}|{checkpoint}"
+
+    def _seed_for(self, workflow_id: str, checkpoint: str) -> list[float]:
+        w = self.reg.get(workflow_id)
+        c = self.reg.checkpoint(checkpoint) if checkpoint else None
+        # The checkpoint knows its own speed; the workflow knows what it adds
+        # on top (a quality chain samples several times over).
+        sps = c.est_seconds_per_step if c else (w.est_seconds_per_step if w else 3.0)
+        load = c.est_load_s if c else (w.est_load_s if w else 30.0)
+        if w and c and w.est_seconds_per_step > c.est_seconds_per_step:
+            sps = w.est_seconds_per_step
+        return [sps, load]
+
     async def start(self) -> None:
         for w in self.reg.all():
-            self._stats[w.key] = [w.est_seconds_per_step, w.est_load_s]
+            for c in self.reg.checkpoints_for(w) or []:
+                self._stats[self._stats_key(w.key, c.name)] = self._seed_for(w.key, c.name)
+            self._stats.setdefault(self._stats_key(w.key, w.checkpoint),
+                                   self._seed_for(w.key, w.checkpoint))
         for r in await self.db.fetch_all(
             "SELECT workflow_id, ewma_seconds_per_step, ewma_load_seconds FROM workflow_stats"
         ):
-            if r["workflow_id"] in self._stats:
-                self._stats[r["workflow_id"]] = [
-                    r["ewma_seconds_per_step"], r["ewma_load_seconds"]
-                ]
+            self._stats[r["workflow_id"]] = [
+                r["ewma_seconds_per_step"], r["ewma_load_seconds"]
+            ]
 
         row = await self.db.fetch_one(
             "SELECT value FROM runtime_state WHERE key = ?", (_RESIDENT_KEY,)
@@ -221,12 +241,14 @@ class QueueManager:
             self._wake.set()
 
     # -- estimates ------------------------------------------------------------
-    def estimate(self, workflow_id: str, steps: int, cold: bool) -> float:
-        sps, load = self._stats.get(workflow_id, [2.0, 30.0])
+    def estimate(self, workflow_id: str, steps: int, cold: bool, checkpoint: str = "") -> float:
+        key = self._stats_key(workflow_id, checkpoint)
+        sps, load = self._stats.get(key) or self._seed_for(workflow_id, checkpoint)
         return steps * sps + (load if cold else 0.0)
 
     def _job_estimate(self, job: Job, assume_resident: str | None) -> float:
-        return self.estimate(job.workflow_id, job.steps, job.checkpoint != assume_resident)
+        return self.estimate(job.workflow_id, job.steps,
+                             job.checkpoint != assume_resident, job.checkpoint)
 
     def _remaining_for_active(self) -> float:
         """Seconds left on the running job: prefer the real step count, fall
@@ -240,7 +262,8 @@ class QueueManager:
         if job.overall > 0.02 and job.sampling_started_at:
             elapsed = now() - job.sampling_started_at
             return max(0.0, elapsed / job.overall - elapsed)
-        sps, _ = self._stats.get(job.workflow_id, [2.0, 30.0])
+        key = self._stats_key(job.workflow_id, job.checkpoint)
+        sps = (self._stats.get(key) or self._seed_for(job.workflow_id, job.checkpoint))[0]
         if job.progress_max and job.progress_value:
             return max(0.0, (job.progress_max - job.progress_value) * sps)
         return self._job_estimate(job, self._resident_checkpoint)
@@ -269,7 +292,8 @@ class QueueManager:
         """
         if not (job.started_at and job.finished_at and job.steps):
             return
-        st = self._stats.setdefault(job.workflow_id, [2.0, 30.0])
+        key = self._stats_key(job.workflow_id, job.checkpoint)
+        st = self._stats.setdefault(key, self._seed_for(job.workflow_id, job.checkpoint))
         a = self.cfg.ewma_alpha
 
         sampling_from = job.sampling_started_at or job.started_at
@@ -284,7 +308,7 @@ class QueueManager:
             if observed_load > 0:
                 st[1] = (1 - a) * st[1] + a * observed_load
 
-        t = asyncio.create_task(self._persist_stats(job.workflow_id, st))
+        t = asyncio.create_task(self._persist_stats(key, st))
         self._bg.add(t)
         t.add_done_callback(self._bg.discard)
 
@@ -406,14 +430,42 @@ class QueueManager:
 
     # -- worker ---------------------------------------------------------------
     def _pick_next(self) -> Job:
-        """Choose the next job to run.
+        """Choose the next job to run, preferring one that needs no model swap.
 
-        Strict FIFO today. This is the single place checkpoint-swap-aware
-        ordering would live (spec section 7): sort pending jobs so those
-        sharing a checkpoint run consecutively, with a capped reordering
-        window so nothing starves. Phase 1 has one checkpoint, so there is
-        nothing to reorder and the clever version would be untested.
+        A checkpoint swap costs 30s+ -- a quarter of a plain SDXL generation,
+        and more than a whole SD1.5 one. So within a bounded look-ahead, a job
+        whose checkpoint is already resident is promoted ahead of one that
+        would force a swap.
+
+        Two things keep that honest. The window is capped, so a job can only
+        ever be overtaken by jobs near the front. And every job passed over
+        counts a skip; once a job has been skipped `queue_max_skips` times it
+        goes next regardless of what it costs. Strict FIFO is the fallback,
+        not the exception -- with one checkpoint in play this does nothing at
+        all, which is exactly what Phase 1 wanted.
         """
+        # Anyone who has waited too long goes now, swap or no swap.
+        for job in self._pending:
+            if job.skips >= self.cfg.queue_max_skips:
+                self._pending.remove(job)
+                return job
+
+        head = self._pending[0]
+        resident = self._resident_checkpoint
+        if resident is None or head.checkpoint == resident:
+            return self._pending.pop(0)
+
+        window = self._pending[:max(1, self.cfg.queue_reorder_window)]
+        for i, job in enumerate(window):
+            if job.checkpoint == resident:
+                if i == 0:
+                    return self._pending.pop(0)
+                for passed in window[:i]:
+                    passed.skips += 1
+                self._pending.remove(job)
+                log.info("job %s promoted over %d job(s): %s is already resident",
+                         job.id, i, job.checkpoint)
+                return job
         return self._pending.pop(0)
 
     async def _worker(self) -> None:

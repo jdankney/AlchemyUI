@@ -108,6 +108,18 @@ class ComfyClient:
         names = spec.get("ckpt_name", [[]])[0]
         return list(names)
 
+    async def loras(self) -> list[str]:
+        """LoRA filenames ComfyUI can load, for the personal-LoRA picker."""
+        try:
+            r = await self._client.get("/models/loras", timeout=10.0)
+            if r.status_code == 200:
+                return list(r.json())
+        except httpx.HTTPError:
+            pass
+        info = await self.object_info("LoraLoader")
+        spec = info.get("LoraLoader", {}).get("input", {}).get("required", {})
+        return list(spec.get("lora_name", [[]])[0])
+
     async def object_info(self, node_class: str | None = None) -> dict:
         path = f"/object_info/{node_class}" if node_class else "/object_info"
         r = await self._client.get(path, timeout=60.0)

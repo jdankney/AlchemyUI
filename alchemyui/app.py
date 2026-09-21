@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from .comfy import ComfyClient, get_comfy
 from .config import Settings, get_settings
 from .db import Database, get_db, now
+from .faces import FaceRejected, get_analyser, normalise_reference
 from .identity import Principal, get_principal
 from .queue import QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
@@ -200,6 +201,105 @@ async def upload_file(upload_id: str, mask: bool = False,
 
 
 # --------------------------------------------------------------------------- #
+# reference faces (Phase 4) -- validated on arrival, never at generation time
+# --------------------------------------------------------------------------- #
+def _ref_row(r) -> dict:
+    return {
+        "id": r["id"], "label": r["label"], "width": r["width"], "height": r["height"],
+        "faces_found": r["faces_found"], "face_score": r["face_score"],
+        "face_px": r["face_px"], "created_at": r["created_at"],
+        "url": f"/api/references/{r['id']}/file",
+    }
+
+
+@app.get("/api/references")
+async def list_references(principal: Principal = Depends(get_principal),
+                          db: Database = Depends(get_db)):
+    rows = await db.fetch_all("SELECT * FROM refs ORDER BY created_at DESC LIMIT 100")
+    return {"references": [_ref_row(r) for r in rows]}
+
+
+@app.post("/api/references")
+async def create_reference(file: UploadFile = File(...),
+                           principal: Principal = Depends(get_principal),
+                           settings: Settings = Depends(get_settings),
+                           db: Database = Depends(get_db),
+                           comfy: ComfyClient = Depends(get_comfy)):
+    """Validate and normalise one reference face.
+
+    This is the whole point of the phase's error handling: InsightFace kills
+    the entire batch if any one image has no detectable face, so each is
+    checked here, on its own, and refused by name with something actionable.
+    Nothing reaches a generation unless every reference is already known good
+    and already the same size.
+    """
+    label = (file.filename or "that image").strip()[:80]
+    try:
+        png, meta = normalise_reference(
+            await file.read(), settings, get_analyser(settings), label)
+    except FaceRejected as e:
+        raise HTTPException(400, str(e))
+
+    ref_id = uuid.uuid4().hex
+    path = save_upload(settings.upload_dir, png, f"ref-{ref_id}")
+    comfy_name = await comfy.upload_image(png, f"ref-{ref_id}.png")
+    ts = now()
+    await db.execute(
+        "INSERT INTO refs (id, path, comfy_name, label, width, height, faces_found, "
+        "  face_score, face_px, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (ref_id, path, comfy_name, label, meta["width"], meta["height"],
+         meta["faces_found"], meta["face_score"], meta["face_px"], ts),
+    )
+    row = await db.fetch_one("SELECT * FROM refs WHERE id = ?", (ref_id,))
+    return _ref_row(row)
+
+
+@app.get("/api/references/{ref_id}/file")
+async def reference_file(ref_id: str,
+                         principal: Principal = Depends(get_principal),
+                         db: Database = Depends(get_db)):
+    row = await db.fetch_one("SELECT path FROM refs WHERE id = ?", (ref_id,))
+    if row is None:
+        raise HTTPException(404, "no such reference")
+    path = Path(row["path"])
+    if not path.exists():
+        raise HTTPException(410, "the file for this reference is gone from disk")
+    return FileResponse(path, media_type="image/png")
+
+
+@app.delete("/api/references/{ref_id}")
+async def delete_reference(ref_id: str,
+                           principal: Principal = Depends(get_principal),
+                           db: Database = Depends(get_db)):
+    row = await db.fetch_one("SELECT path FROM refs WHERE id = ?", (ref_id,))
+    if row is None:
+        raise HTTPException(404, "no such reference")
+    await db.execute("DELETE FROM refs WHERE id = ?", (ref_id,))
+    try:
+        Path(row["path"]).unlink(missing_ok=True)
+    except OSError:
+        log.warning("failed to remove reference file %s", row["path"])
+    return {"deleted": ref_id}
+
+
+@app.get("/api/loras")
+async def list_loras(principal: Principal = Depends(get_principal),
+                     comfy: ComfyClient = Depends(get_comfy)):
+    """Personal LoRAs the likeness workflow can apply.
+
+    FaceID's own LoRAs are filtered out: IPAdapterUnifiedLoaderFaceID already
+    applies the matching one itself, and loading it a second time here would
+    have it fighting its own weights.
+    """
+    try:
+        names = await comfy.loras()
+    except Exception:  # noqa: BLE001 -- an empty picker beats a broken page
+        log.warning("could not list loras", exc_info=True)
+        names = []
+    return {"loras": [n for n in names if "ip-adapter-faceid" not in n.lower()]}
+
+
+# --------------------------------------------------------------------------- #
 # generation
 # --------------------------------------------------------------------------- #
 class GenerateRequest(BaseModel):
@@ -228,6 +328,14 @@ class GenerateRequest(BaseModel):
     refine_steps: int | None = None
     face_denoise: float | None = None
     face_guide: int | None = None
+    # Phase 4 -- likeness
+    reference_ids: list[str] | None = None
+    face_weight: float | None = None
+    face_weight_v2: float | None = None
+    face_start: float | None = None
+    face_end: float | None = None
+    lora_name: str | None = None
+    lora_strength: float | None = None
 
 
 @app.post("/api/generate")
@@ -249,7 +357,10 @@ async def generate(req: GenerateRequest,
 
     raw = req.model_dump(exclude_none=True)
     upload = None
-    if workflow.requires:
+    # Checked by name, not by "requires is non-empty": a likeness workflow
+    # requires references and no image at all, and would otherwise be told to
+    # supply one.
+    if "image" in workflow.requires:
         if not req.image_id:
             raise HTTPException(400, f"{workflow.display} needs an image to work from")
         upload = await db.fetch_one("SELECT * FROM uploads WHERE id = ?", (req.image_id,))
@@ -260,6 +371,25 @@ async def generate(req: GenerateRequest,
             if not upload["mask_comfy_name"]:
                 raise HTTPException(400, "brush over the area you want changed first")
             raw["mask"] = upload["mask_comfy_name"]
+
+    if "references" in workflow.requires:
+        ids = req.reference_ids or []
+        if not ids:
+            raise HTTPException(400, "add at least one reference photo of the face")
+        limit = workflow.references.max if workflow.references else len(ids)
+        if len(ids) > limit:
+            raise HTTPException(400, f"at most {limit} reference photos")
+        rows = []
+        for ref_id in ids:
+            row = await db.fetch_one("SELECT * FROM refs WHERE id = ?", (ref_id,))
+            if row is None:
+                raise HTTPException(404, f"reference {ref_id} is no longer available")
+            rows.append(row)
+        raw["references"] = [r["comfy_name"] for r in rows]
+        # A personal LoRA and FaceID both encode identity, and at full strength
+        # they fight. Unless a weight was chosen explicitly, start lower.
+        if req.lora_name and req.face_weight is None:
+            raw["face_weight"] = settings.lora_face_weight
 
     params = workflow.resolve(raw)
     if not params["prompt"]:

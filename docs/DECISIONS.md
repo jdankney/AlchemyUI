@@ -262,6 +262,64 @@ checked against ComfyUI 0.30.0's source rather than guessed.
   edited. It goes through the same normalisation as a fresh upload: one code
   path, one set of guarantees about size.
 
+## Likeness (Phase 4)
+
+The spec names two failure modes it has already hit in practice. Both are now
+prevented on upload rather than handled at generation time, because both kill
+a job *after* the queue wait and the model load.
+
+- **Every reference is face-checked on its own, the moment it is added.**
+  InsightFace raises "No face detected." if any one image in a batch fails, and
+  takes the whole job with it. Checking each on arrival means the bad one is
+  refused by name, with something actionable ("No face found in meadow.png"),
+  and nothing reaches a generation unless every reference is already known good.
+- **Every reference leaves normalisation at an identical 768×768 square.**
+  `ImageBatch` rescales and centre-crops later images to match the *first*,
+  which can slice a face out of frame. If they all arrive the same size,
+  ImageBatch has nothing left to do. There is a test asserting that references
+  from wildly different source aspect ratios all come out identical.
+- **InsightFace runs inside AlchemyUI, on the CPU.** The spec says to normalise
+  "with PIL", but PIL cannot find a face, so it can neither centre one nor say
+  which reference is bad — and both are things the spec explicitly asks for.
+  The models are reused from ComfyUI's `models/insightface` rather than
+  downloaded again, and `onnxruntime` (not `-gpu`) keeps the GPU entirely for
+  the sampler. It is a second copy of the detection stack, and worth it: the
+  check is immediate, it names the file, and it works when ComfyUI is down.
+  The app has insightface 2.0 against ComfyUI's 1.0.1, but both read the same
+  `buffalo_l` weights, so a disagreement between them is unlikely.
+- **The crop stays square and is clamped to the image, never padded or
+  stretched.** A face near an edge gives a slightly off-centre crop, which is
+  much better than a distorted one. The square side is the face box times a
+  margin, because FaceID wants head and shoulders rather than a tight box.
+- **The largest face wins when several are found, and the count is reported.**
+  A bystander in the background should not cost someone their upload; the UI
+  marks the thumbnail so the choice is visible.
+- **The whole reference chain lives in the template; a job prunes it.** All
+  four slots and all three `ImageBatch` nodes are in the file, so the boot
+  validator checks every one of them — including that the chain really is a
+  chain, which is what pruning assumes. A job keeps as many as it was given,
+  repoints the consumer, and drops the tail. Building the chain dynamically
+  would have meant graph surgery the validator could not see.
+- **The personal LoRA node is bypassed, not set to zero strength.** Bypassing
+  reroutes each output back to the input it would have passed through, exactly
+  as ComfyUI's own bypass does. Zero strength would still load the file, and
+  the only LoRAs on disk are FaceID's own — which
+  `IPAdapterUnifiedLoaderFaceID` already applies, so loading one again would
+  have it fighting its own weights. They are filtered out of the picker for
+  the same reason.
+- **A personal LoRA lowers the default face weight to 0.45.** The spec's
+  0.4–0.5: a LoRA and FaceID both encode identity and pull against each other
+  at full strength. Only the *default* moves — an explicit weight is respected.
+- **Both FaceID weights are exposed.** `weight` and `weight_faceidv2` trade off
+  differently, which is why the spec asks for two sliders rather than one
+  number.
+- **Measured:** one reference 172s, two 178s, against a 133s plain generation.
+  SDXL FaceID *does* fit on the 6GB card — the open question from the planning
+  stage — so Phase 4 stays on RealVisXL like everything else and no SD1.5
+  fallback was needed. Faces come out slightly over-smooth at the default
+  weights, which is characteristic of FaceID PlusV2; the sliders are there for
+  it.
+
 ## Multi-stage progress
 
 - **A job can report progress from more than one node, and the bar has to

@@ -1,0 +1,252 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    },
+    "inputs": {
+      "seed": 0,
+      "steps": 25,
+      "cfg": 6.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": [
+        "32",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    },
+    "inputs": {
+      "ckpt_name": "RealVisXL_V5.0_fp16.safetensors"
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
+    },
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive)"
+    },
+    "inputs": {
+      "text": "",
+      "clip": [
+        "30",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative)"
+    },
+    "inputs": {
+      "text": "",
+      "clip": [
+        "30",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    },
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    },
+    "inputs": {
+      "images": [
+        "8",
+        0
+      ],
+      "filename_prefix": "alchemyui_likeness"
+    }
+  },
+  "30": {
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Personal LoRA (optional)"
+    },
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ],
+      "lora_name": "ip-adapter-faceid-plusv2_sdxl_lora.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8
+    }
+  },
+  "31": {
+    "class_type": "IPAdapterUnifiedLoaderFaceID",
+    "_meta": {
+      "title": "Load FaceID"
+    },
+    "inputs": {
+      "model": [
+        "30",
+        0
+      ],
+      "preset": "FACEID PLUS V2",
+      "lora_strength": 0.6,
+      "provider": "CPU"
+    }
+  },
+  "40": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference 1"
+    },
+    "inputs": {
+      "image": "example.png"
+    }
+  },
+  "41": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference 2"
+    },
+    "inputs": {
+      "image": "example.png"
+    }
+  },
+  "42": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference 3"
+    },
+    "inputs": {
+      "image": "example.png"
+    }
+  },
+  "43": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Reference 4"
+    },
+    "inputs": {
+      "image": "example.png"
+    }
+  },
+  "50": {
+    "class_type": "ImageBatch",
+    "_meta": {
+      "title": "Batch 1+2"
+    },
+    "inputs": {
+      "image1": [
+        "40",
+        0
+      ],
+      "image2": [
+        "41",
+        0
+      ]
+    }
+  },
+  "51": {
+    "class_type": "ImageBatch",
+    "_meta": {
+      "title": "Batch +3"
+    },
+    "inputs": {
+      "image1": [
+        "50",
+        0
+      ],
+      "image2": [
+        "42",
+        0
+      ]
+    }
+  },
+  "52": {
+    "class_type": "ImageBatch",
+    "_meta": {
+      "title": "Batch +4"
+    },
+    "inputs": {
+      "image1": [
+        "51",
+        0
+      ],
+      "image2": [
+        "43",
+        0
+      ]
+    }
+  },
+  "32": {
+    "class_type": "IPAdapterFaceID",
+    "_meta": {
+      "title": "Apply FaceID"
+    },
+    "inputs": {
+      "model": [
+        "31",
+        0
+      ],
+      "ipadapter": [
+        "31",
+        1
+      ],
+      "image": [
+        "52",
+        0
+      ],
+      "weight": 0.8,
+      "weight_faceidv2": 1.0,
+      "weight_type": "linear",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "embeds_scaling": "V only"
+    }
+  }
+}

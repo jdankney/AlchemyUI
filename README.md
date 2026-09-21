@@ -25,6 +25,11 @@ One GPU, strict FIFO, honest ETAs. No accounts, no metering, no cloud.
   generation, as one job. Measured at about 2.8× a plain generation on a
   GTX 1660 Ti (372s against 133s).
 
+- **Likeness** — generate someone from reference photos of their face
+  (IPAdapter FaceID), up to four at once. Each photo is checked for a face and
+  cropped square around it as you add it, so a bad one is refused there rather
+  than killing a job minutes later.
+
 Any image in the gallery can go straight back into the editors: **Edit** drops
 it into Transform, **Enhance** runs the quality chain over it.
 
@@ -70,7 +75,13 @@ is preserved.
 The quality chain additionally needs `4xNMKDSuperscale_4xNMKDSuperscale.pt`
 in `models/upscale_models/` and `bbox/face_yolov8m.pt` in
 `models/ultralytics/bbox/`, plus the Impact Pack custom nodes.
-`alchemyui validate --live` checks all of it.
+Likeness needs `ip-adapter-faceid-plusv2_sdxl.bin` in `models/ipadapter/`, its
+paired LoRA in `models/loras/`, `CLIP-ViT-H-14` in `models/clip_vision/`, and
+the ComfyUI_IPAdapter_plus nodes. `alchemyui validate --live` checks all of it.
+
+AlchemyUI also reads InsightFace's `buffalo_l` models directly, to check
+reference faces as they are uploaded — set `INSIGHTFACE_ROOT` if ComfyUI is
+not at `~/ComfyUI`.
 
 ---
 
@@ -141,7 +152,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 99 tests, no GPU and no ComfyUI needed
+uv run pytest -q          # 120 tests, no GPU and no ComfyUI needed
 uv run ruff check .
 ```
 
@@ -156,8 +167,9 @@ never completes.
 
 ```
 alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
-                  registry.py workflows · storage.py files+uploads · cli.py validate
-workflows/        registry.json + six API-format templates
+                  registry.py workflows · storage.py files+uploads
+                  faces.py reference validation · cli.py validate
+workflows/        registry.json + seven API-format templates
 deploy/           systemd user unit, idempotent install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
 tests/            pytest; no GPU required

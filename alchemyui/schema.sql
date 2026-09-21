@@ -64,6 +64,24 @@ CREATE TABLE IF NOT EXISTS uploads (
 );
 CREATE INDEX IF NOT EXISTS ix_uploads_created ON uploads(created_at DESC);
 
+-- Reference faces for likeness generation (Phase 4). Separate from `uploads`
+-- because these are a set, not a single source: several are batched into one
+-- job, every one is validated and normalised to the same square size on
+-- arrival, and they are reused across jobs rather than belonging to one.
+CREATE TABLE IF NOT EXISTS refs (
+    id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk stem
+    path         TEXT NOT NULL,          -- our normalised square copy
+    comfy_name   TEXT NOT NULL,          -- filename inside ComfyUI's input/
+    label        TEXT NOT NULL DEFAULT '',
+    width        INTEGER NOT NULL,
+    height       INTEGER NOT NULL,
+    faces_found  INTEGER NOT NULL DEFAULT 1,   -- more than one means we took the largest
+    face_score   REAL,                          -- detector confidence, for the UI
+    face_px      INTEGER,                       -- how big the face was in the original
+    created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_refs_created ON refs(created_at DESC);
+
 -- Learned per-workflow durations: EWMA over observed runs, seeded from the
 -- registry's `est` block. Two separate figures, because a checkpoint swap
 -- (30s+) and the sampling itself scale with completely different things.
