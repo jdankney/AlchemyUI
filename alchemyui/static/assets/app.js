@@ -521,7 +521,7 @@ function renderChainNote() {
   if (el && w) el.textContent = chainNote(w);
 }
 
-const promptPlaceholder = w =
+const promptPlaceholder = w =>
   w.kind === 'inpaint' ? 'Describe what should appear in the painted area…'
   : w.kind === 'outpaint' ? 'Describe what continues beyond the edges…'
   : w.kind === 'img2img' ? 'Describe what the image should become…'
