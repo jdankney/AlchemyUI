@@ -320,6 +320,87 @@ a job *after* the queue wait and the model load.
   weights, which is characteristic of FaceID PlusV2; the sliders are there for
   it.
 
+## The platform layer (Phase 5)
+
+- **Checkpoints are first-class registry entries, not a field on a workflow.**
+  Resolution and sampling belong to the model: SD1.5 falls apart much above
+  512–768 a side and SDXL is trained at ~1024, so a shared "aspect" table
+  would be wrong for one of them. A checkpoint carries its own aspects,
+  defaults and timing seeds; picking a model switches all of it together.
+- **One template serves both families.** `CheckpointLoaderSimple` does not care
+  which weights it loaded, so txt2img, img2img, inpaint and outpaint each
+  declare `families: [sdxl, sd15]` and the same validated graph runs both.
+  Only the quality chain and likeness are SDXL-only — their tile sizes and
+  FaceID presets were measured for SDXL, and SD1.5 variants would need their
+  own numbers rather than an assumption.
+- **A workflow's declared cost is a ratio, not an absolute.** `est` is quoted
+  against the workflow's own default checkpoint, so what the workflow
+  contributes is "2.9x a plain generation", which holds on either family.
+  Taking its SDXL seconds literally made SD1.5 look exactly as slow as SDXL —
+  caught by a test that asserted the cheaper model estimates cheaper.
+- **Timings are learned per workflow *and* per checkpoint.** SD1.5 measured
+  ~1.2s/step against SDXL's ~5.25s; one average across both would be wrong for
+  each of them, and the ETA is the main thing the UI promises.
+
+## Checkpoint-swap-aware queueing
+
+The seam left open in Phase 1, now that there is more than one checkpoint to
+reorder around.
+
+- **A swap costs 30s+** — a quarter of an SDXL generation and more than a whole
+  SD1.5 one. So within a bounded look-ahead, a job whose checkpoint is already
+  resident is promoted ahead of one that would force a load.
+- **Two things keep it honest.** The window is capped
+  (`QUEUE_REORDER_WINDOW`), so a job can only be overtaken by jobs near the
+  front. And every job passed over counts a skip; at `QUEUE_MAX_SKIPS` it runs
+  next regardless of cost. Strict FIFO is the fallback, not the exception.
+- **With one checkpoint in play it does nothing at all**, which is exactly what
+  Phase 1 promised when the seam was left empty. There is a test asserting
+  that.
+- **Measured:** submitting SD1.5, SDXL, SD1.5 ran them SD1.5, SD1.5, SDXL —
+  one model load instead of two.
+
+## Live previews
+
+- **Frames come over HTTP; the event stream only says a newer one exists.** A
+  frame is 20–60KB and arrives once per sampling step; pushing that down the
+  SSE stream would swamp a channel that also carries queue state. The browser
+  fetches at whatever rate it can keep up with, with one request in flight per
+  job, so a slow connection drops frames rather than queueing them.
+- **Frames live in memory only** and are released the moment the job ends —
+  they are worthless once the next arrives, and the real image supersedes them.
+- **Previews require ComfyUI to be started with `--preview-method auto`**; it
+  defaults to none. Their absence is normal and never looks like a fault.
+- Frames carry no prompt_id, but only one job ever holds the GPU, so attaching
+  them to the active job is unambiguous.
+
+## Gallery, history and presets
+
+- **Batch generation is n separate jobs, not one graph with `batch_size: n`.**
+  They queue, report progress and cancel individually, and a 6GB card will not
+  hold a batched SDXL latent. An explicit seed still increments across the
+  batch — otherwise "4 images" is four copies of one image.
+- **Prompt history is read back out of the images table**, not kept separately.
+  Storing the full parameter set on every image was what made "reuse these
+  settings" and the reproducibility trail possible; it doubles as the history
+  and the search index for free, with nothing to keep in sync.
+- **Search and filters run server-side.** The gallery only holds what has been
+  fetched, so filtering in the browser would quietly hide older matches.
+- **Tags are normalised on the way in** — lowercased, de-duplicated, trimmed,
+  capped — and matched with comma boundaries, so filtering on `port` does not
+  match `portrait`.
+- **Saving a preset over an existing name updates it** rather than erroring.
+  Renaming to reuse a name is a chore, and there is one user.
+
+## Not built, and why
+
+- **ControlNet.** No ControlNet models are on disk and no preprocessor nodes
+  are installed, so there is nothing to build against. The spec hedged it with
+  "if VRAM allows" and the honest answer is that it needs models first.
+- **A LoRA library with thumbnails.** The only LoRAs present are FaceID's own,
+  which are deliberately filtered out of the picker (see Phase 4). The picker
+  exists and works; it has nothing to show until a personal LoRA is added.
+
 ## Multi-stage progress
 
 - **A job can report progress from more than one node, and the bar has to

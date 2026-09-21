@@ -16,7 +16,7 @@ import pytest
 
 from alchemyui.config import Settings
 from alchemyui.db import Database
-from alchemyui.queue import JobState, QueueManager
+from alchemyui.queue import Job, JobState, QueueManager
 from alchemyui.registry import load_registry
 from tests.conftest import FakeComfy
 
@@ -263,17 +263,20 @@ async def test_durations_are_learned_and_persisted(tmp_db_path, tmp_output_dir):
     comfy.delay = 0.02
     qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
     try:
-        seeded = qm._stats["txt2img-sdxl"][0]
-        # seeded from the registry's est block, not a number baked in here
-        assert seeded == qm.reg.require("txt2img-sdxl").est_seconds_per_step
+        # Timings are keyed per workflow *and* checkpoint: SD1.5 is roughly
+        # four times faster than SDXL, so one average across both is wrong for
+        # each of them.
+        key = qm._stats_key("txt2img-sdxl", qm.reg.require("txt2img-sdxl").checkpoint)
+        seeded = qm._stats[key][0]
+        assert seeded == qm._seed_for("txt2img-sdxl", qm.reg.require("txt2img-sdxl").checkpoint)[0]
 
         job = await _submit(qm)
         await asyncio.wait_for(job._done.wait(), 10)
         await asyncio.sleep(0.05)                  # the persist is fire-and-forget
 
-        assert qm._stats["txt2img-sdxl"][0] != seeded   # moved toward what we measured
+        assert qm._stats[key][0] != seeded             # moved toward what we measured
         row = await qm.db.fetch_one(
-            "SELECT samples FROM workflow_stats WHERE workflow_id='txt2img-sdxl'")
+            "SELECT samples FROM workflow_stats WHERE workflow_id = ?", (key,))
         assert row and row["samples"] >= 1
     finally:
         await qm.stop()
@@ -425,5 +428,74 @@ async def test_position_counts_jobs_ahead_not_place_in_line(tmp_db_path, tmp_out
         assert qm.position_of(c.id) == 2
         assert [j["position"] for j in qm.snapshot()["jobs"]] == [0, 1, 2]
         assert qm.position_of("nope") is None
+    finally:
+        await qm.stop()
+
+
+# --- checkpoint-swap-aware ordering (Phase 5) -------------------------------
+def _swap_qm_job(qm, checkpoint: str):
+    """A job pinned to a given checkpoint, without needing that model on disk."""
+    w = qm.reg.require("txt2img-sdxl")
+    params = w.resolve({"prompt": "x", "steps": 4})
+    params["checkpoint"] = checkpoint
+    return Job(workflow_id=w.key, params=params)
+
+
+@pytest.mark.asyncio
+async def test_a_job_needing_no_swap_is_promoted(tmp_db_path, tmp_output_dir):
+    """A swap costs 30s+, so within a bounded window a job whose model is
+    already loaded goes first."""
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, FakeComfy())
+    try:
+        qm._resident_checkpoint = "A"
+        qm._pending = [_swap_qm_job(qm, "B"), _swap_qm_job(qm, "B"), _swap_qm_job(qm, "A")]
+        wanted = qm._pending[2]
+        assert qm._pick_next() is wanted
+        assert [j.skips for j in qm._pending] == [1, 1]   # the two it passed
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_nothing_starves_however_many_swaps_it_costs(tmp_db_path, tmp_output_dir):
+    """Once a job has been passed over enough times it runs next, whatever it
+    costs -- otherwise a steady trickle of same-model work could hold it
+    forever."""
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, FakeComfy())
+    try:
+        qm._resident_checkpoint = "A"
+        starved = _swap_qm_job(qm, "B")
+        starved.skips = qm.cfg.queue_max_skips
+        qm._pending = [starved, _swap_qm_job(qm, "A")]
+        assert qm._pick_next() is starved
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_promotion_only_reaches_inside_the_window(tmp_db_path, tmp_output_dir):
+    """A job can only ever be overtaken by jobs near the front of the queue."""
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, FakeComfy())
+    try:
+        qm._resident_checkpoint = "A"
+        far = _swap_qm_job(qm, "A")
+        qm._pending = [_swap_qm_job(qm, "B")
+                       for _ in range(qm.cfg.queue_reorder_window + 2)] + [far]
+        head = qm._pending[0]
+        assert qm._pick_next() is head      # `far` is out of reach; FIFO wins
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_one_checkpoint_means_plain_fifo(tmp_db_path, tmp_output_dir):
+    """The Phase 1 promise: with a single model in play this does nothing."""
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, FakeComfy())
+    try:
+        qm._resident_checkpoint = "A"
+        qm._pending = [_swap_qm_job(qm, "A") for _ in range(5)]
+        order = [qm._pick_next() for _ in range(5)]
+        assert [j.id for j in order] == [j.id for j in order]
+        assert all(j.skips == 0 for j in order)
     finally:
         await qm.stop()

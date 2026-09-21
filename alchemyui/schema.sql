@@ -43,9 +43,11 @@ CREATE TABLE IF NOT EXISTS images (
     workflow_id  TEXT NOT NULL,
     params_json  TEXT NOT NULL,
     favorite     INTEGER NOT NULL DEFAULT 0,
+    tags         TEXT NOT NULL DEFAULT '',   -- comma-separated, lowercase, for filtering
     created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_images_created ON images(created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_images_favorite ON images(favorite, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_images_job ON images(job_id);
 
 -- Uploaded source images and their masks (Phase 2: img2img, inpaint,
@@ -81,6 +83,17 @@ CREATE TABLE IF NOT EXISTS refs (
     created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_refs_created ON refs(created_at DESC);
+
+-- Saved presets: a named workflow + parameter bundle. Stores whatever the
+-- composer had, so loading one restores the whole setup rather than a prompt.
+CREATE TABLE IF NOT EXISTS presets (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    workflow_id  TEXT NOT NULL,
+    params_json  TEXT NOT NULL,
+    created_at   REAL NOT NULL,
+    updated_at   REAL NOT NULL
+);
 
 -- Learned per-workflow durations: EWMA over observed runs, seeded from the
 -- registry's `est` block. Two separate figures, because a checkpoint swap

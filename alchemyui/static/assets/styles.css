@@ -288,6 +288,71 @@ textarea.input { resize: vertical; min-height: 3.4rem; line-height: 1.5; }
 .denoise-ends { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-4); }
 .denoise-label { font-size: 12px; color: var(--accent); padding-top: 2px; }
 
+/* ------------------------------------------------------ Phase 5: platform */
+.model-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.select-wrap { position: relative; display: inline-flex; min-width: 12rem; }
+.select-wrap .select { padding-right: 28px; }
+.seg-batch button { min-width: 2.4rem; justify-content: center; }
+
+.presets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 2px 0; }
+.preset { display: inline-flex; align-items: center; border: 1px solid var(--line);
+  border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+.preset > button:first-child { padding: 4px 10px; font-size: 13px; color: var(--text-2); }
+.preset > button:first-child:hover { color: var(--text); }
+.preset .del { padding: 4px 7px 4px 2px; color: var(--text-4); }
+.preset .del:hover { color: var(--danger); }
+
+/* gallery filters */
+.filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.search { position: relative; display: inline-flex; align-items: center; }
+.search .icon { position: absolute; left: 9px; color: var(--text-4); pointer-events: none; }
+.search .input { padding-left: 30px; width: 14rem; }
+.tag-cloud { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px; font-size: 12px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text-2);
+}
+button.tag:hover { border-color: var(--accent-line); color: var(--accent); }
+.tag .n { color: var(--text-4); font-size: 11px; }
+
+.card-foot .fav { color: var(--text-4); display: inline-flex; }
+.card-foot .fav:hover { color: var(--warn); }
+.card-foot .fav.is-on { color: var(--warn); }
+.card-foot .fav.is-on .icon { fill: var(--warn); }
+
+.lightbox-tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; align-items: center; }
+.lightbox-tags .tag { background: var(--panel); }
+.lightbox-tags .tag button { display: inline-flex; color: var(--text-4); }
+.lightbox-tags .tag button:hover { color: var(--danger); }
+.tag-input { width: 9rem; padding: 3px 9px; font-size: 12px; border-radius: 999px; }
+
+/* a live preview sits behind the progress readout while a job runs */
+.card-job.has-preview { position: relative; }
+.job-preview {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  opacity: .34; filter: blur(1px); pointer-events: none;
+}
+.card-job.has-preview > *:not(.job-preview) { position: relative; z-index: 1; }
+
+/* history sheet */
+.sheet {
+  position: fixed; inset: 0; z-index: 70; display: flex; justify-content: center;
+  align-items: flex-start; padding: 8vh 16px 16px; background: rgba(6, 8, 12, .72);
+}
+.sheet-inner {
+  width: min(42rem, 100%); max-height: 78vh; display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  border-radius: var(--r-xl); box-shadow: var(--shadow); padding: 14px;
+}
+.history { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.history-row { padding: 9px 10px; border-radius: var(--r-md); cursor: pointer; }
+.history-row:hover { background: var(--panel-2); }
+.history-row .p {
+  display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; line-height: 1.4;
+}
+
 /* ----------------------------------------------------------- gallery */
 .gallery { padding: 22px 0 60px; }
 .gallery-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -370,6 +435,8 @@ textarea.input { resize: vertical; min-height: 3.4rem; line-height: 1.5; }
   .grid-2 { grid-template-columns: 1fr; }
   .compose-tools { gap: 6px; }
   .mask-stage { max-height: 40vh; }
+  .search .input { width: 100%; }
+  .filters { width: 100%; }
   .mask-size { max-width: none; }
   .seg button { padding: 5px 8px; font-size: 12px; }
 }

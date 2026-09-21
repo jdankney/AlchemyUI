@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -27,7 +27,7 @@ from .db import Database, get_db, now
 from .faces import FaceRejected, get_analyser, normalise_reference
 from .identity import Principal, get_principal
 from .queue import QueueManager, get_queue, start_queue, stop_queue
-from .registry import Registry, get_registry
+from .registry import MAX_SEED, Registry, get_registry
 from .storage import UploadRejected, normalise_mask, normalise_upload, save_upload
 
 logging.basicConfig(level=logging.INFO,
@@ -88,15 +88,31 @@ async def list_workflows(principal: Principal = Depends(get_principal),
     out = []
     for w in reg.all():
         entry = w.public()
-        cold = w.checkpoint != qm._resident_checkpoint
-        entry["resident"] = not cold
-        # An honest headline number for the default step count, so the UI can
-        # say "about a minute" before anything is submitted.
-        entry["est_seconds"] = round(
-            qm.estimate(w.key, int(w.defaults.get("steps", 25)), cold)
-        )
-        entry["seconds_per_step"] = round(qm._stats.get(w.key, [2.0, 30.0])[0], 2)
-        entry["load_seconds"] = round(qm._stats.get(w.key, [2.0, 30.0])[1], 1)
+        entry["checkpoints"] = [c.public() for c in reg.checkpoints_for(w)] or [
+            {"name": w.checkpoint, "label": w.checkpoint, "family": "sdxl",
+             "blurb": "", "aspects": entry.get("aspects", {}), "defaults": {}}
+        ]
+        # Per checkpoint, because a swap and a step cost wildly different
+        # amounts depending on which model is in play.
+        timings = {}
+        for c in entry["checkpoints"]:
+            name = c["name"]
+            cold = name != qm._resident_checkpoint
+            steps = int(c["defaults"].get("steps") or w.defaults.get("steps") or 25)
+            sps, load = (qm._stats.get(qm._stats_key(w.key, name))
+                         or qm._seed_for(w.key, name))
+            timings[name] = {
+                "resident": not cold,
+                "est_seconds": round(qm.estimate(w.key, steps, cold, name)),
+                "seconds_per_step": round(sps, 2),
+                "load_seconds": round(load, 1),
+            }
+        entry["timings"] = timings
+        here = timings.get(w.checkpoint) or next(iter(timings.values()))
+        entry["resident"] = here["resident"]
+        entry["est_seconds"] = here["est_seconds"]
+        entry["seconds_per_step"] = here["seconds_per_step"]
+        entry["load_seconds"] = here["load_seconds"]
         out.append(entry)
     return {"workflows": out, "resident_checkpoint": qm._resident_checkpoint}
 
@@ -336,6 +352,9 @@ class GenerateRequest(BaseModel):
     face_end: float | None = None
     lora_name: str | None = None
     lora_strength: float | None = None
+    # Phase 5
+    checkpoint: str | None = None
+    batch: int = 1
 
 
 @app.post("/api/generate")
@@ -391,7 +410,19 @@ async def generate(req: GenerateRequest,
         if req.lora_name and req.face_weight is None:
             raw["face_weight"] = settings.lora_face_weight
 
-    params = workflow.resolve(raw)
+    chosen = None
+    if req.checkpoint:
+        chosen = reg.checkpoint(req.checkpoint)
+        if chosen is None:
+            raise HTTPException(400, f"unknown model: {req.checkpoint}")
+        if chosen.family not in workflow.families:
+            raise HTTPException(
+                400, f"{chosen.label} is a {chosen.family} model, which "
+                     f"{workflow.display} cannot use")
+    else:
+        chosen = reg.checkpoint(workflow.checkpoint)
+
+    params = workflow.resolve(raw, chosen)
     if not params["prompt"]:
         raise HTTPException(400, "a prompt is required")
 
@@ -413,13 +444,34 @@ async def generate(req: GenerateRequest,
             params.get(f"pad_{s}") for s in ("left", "top", "right", "bottom")):
         raise HTTPException(400, "choose at least one direction to extend into")
 
-    job = await qm.submit(workflow, params)
-    if upload is not None:
-        await db.execute(
-            "UPDATE jobs SET input_image_path = ?, mask_path = ? WHERE id = ?",
-            (upload["path"], upload["mask_path"], job.id),
-        )
-    return {"job_id": job.id, "position": qm.position_of(job.id), "params": job.params}
+    # Batch generation is n separate jobs, not one graph with batch_size=n:
+    # they queue, report and cancel individually, and a 6GB card cannot hold
+    # a batched SDXL latent anyway.
+    count = max(1, min(req.batch, settings.max_batch))
+    explicit_seed = req.seed is not None
+    jobs = []
+    for i in range(count):
+        p = dict(params)
+        if i and not explicit_seed:
+            p = workflow.resolve({**raw, "seed": None}, chosen)
+        elif i:
+            # An explicit seed still has to vary, or every image is identical.
+            p["seed"] = (p["seed"] + i) % (MAX_SEED + 1)
+            for extra in ("hq_seed", "face_seed"):
+                if extra in p:
+                    p[extra] = p["seed"]
+        job = await qm.submit(workflow, p)
+        if upload is not None:
+            await db.execute(
+                "UPDATE jobs SET input_image_path = ?, mask_path = ? WHERE id = ?",
+                (upload["path"], upload["mask_path"], job.id),
+            )
+        jobs.append(job)
+
+    first = jobs[0]
+    return {"job_id": first.id, "position": qm.position_of(first.id),
+            "params": first.params,
+            "job_ids": [j.id for j in jobs], "batch": count}
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -462,6 +514,24 @@ async def list_jobs(limit: int = 50,
     return {"jobs": jobs}
 
 
+@app.get("/api/jobs/{job_id}/preview")
+async def job_preview(job_id: str,
+                      principal: Principal = Depends(get_principal),
+                      qm: QueueManager = Depends(get_queue)):
+    """The latest live preview frame for a running job.
+
+    Served over HTTP rather than pushed down the SSE stream: a frame is tens of
+    kilobytes and arrives several times a second, which would swamp an event
+    stream that also carries queue state. The stream just says a newer frame
+    exists and the browser fetches it at whatever rate it can keep up with.
+    """
+    job = qm._by_id.get(job_id)
+    if job is None or job.preview is None:
+        raise HTTPException(404, "no preview available")
+    return Response(content=job.preview, media_type=job.preview_media,
+                    headers={"Cache-Control": "no-store"})
+
+
 # --------------------------------------------------------------------------- #
 # gallery
 # --------------------------------------------------------------------------- #
@@ -470,23 +540,179 @@ def _image_row(r) -> dict:
         "id": r["id"], "job_id": r["job_id"], "width": r["width"], "height": r["height"],
         "seed": r["seed"], "workflow_id": r["workflow_id"],
         "params": json.loads(r["params_json"]), "favorite": bool(r["favorite"]),
+        "tags": [t for t in (r["tags"] or "").split(",") if t],
         "created_at": r["created_at"], "url": f"/api/images/{r['id']}/file",
     }
 
 
+def _clean_tags(raw: list[str]) -> str:
+    seen = []
+    for t in raw:
+        t = " ".join(str(t).lower().split())[:32]
+        if t and t not in seen:
+            seen.append(t)
+    return ",".join(seen[:12])
+
+
 @app.get("/api/images")
 async def list_images(limit: int = 100, before: float | None = None,
+                      q: str = "", favorite: bool = False, tag: str = "",
+                      workflow_id: str = "",
                       principal: Principal = Depends(get_principal),
                       db: Database = Depends(get_db)):
+    """The gallery, newest first, with the filters the UI offers.
+
+    Prompt search runs against params_json rather than a separate index: every
+    image already stores its full parameter set, so there is nothing to keep
+    in sync and a LIKE over a few thousand rows is instant.
+    """
     limit = max(1, min(limit, 500))
-    if before is None:
-        rows = await db.fetch_all(
-            "SELECT * FROM images ORDER BY created_at DESC LIMIT ?", (limit,))
-    else:
-        rows = await db.fetch_all(
-            "SELECT * FROM images WHERE created_at < ? ORDER BY created_at DESC LIMIT ?",
-            (before, limit))
-    return {"images": [_image_row(r) for r in rows]}
+    where, args = [], []
+    if before is not None:
+        where.append("created_at < ?")
+        args.append(before)
+    if q.strip():
+        where.append("LOWER(params_json) LIKE ?")
+        args.append(f"%{q.strip().lower()}%")
+    if favorite:
+        where.append("favorite = 1")
+    if tag.strip():
+        where.append("(',' || tags || ',') LIKE ?")
+        args.append(f"%,{tag.strip().lower()},%")
+    if workflow_id.strip():
+        where.append("workflow_id = ?")
+        args.append(workflow_id.strip())
+
+    sql = "SELECT * FROM images"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    args.append(limit)
+    return {"images": [_image_row(r) for r in await db.fetch_all(sql, args)]}
+
+
+class ImageUpdate(BaseModel):
+    favorite: bool | None = None
+    tags: list[str] | None = None
+
+
+@app.patch("/api/images/{image_id}")
+async def update_image(image_id: str, req: ImageUpdate,
+                       principal: Principal = Depends(get_principal),
+                       db: Database = Depends(get_db)):
+    row = await db.fetch_one("SELECT * FROM images WHERE id = ?", (image_id,))
+    if row is None:
+        raise HTTPException(404, "no such image")
+    if req.favorite is not None:
+        await db.execute("UPDATE images SET favorite = ? WHERE id = ?",
+                         (int(req.favorite), image_id))
+    if req.tags is not None:
+        await db.execute("UPDATE images SET tags = ? WHERE id = ?",
+                         (_clean_tags(req.tags), image_id))
+    return _image_row(await db.fetch_one("SELECT * FROM images WHERE id = ?", (image_id,)))
+
+
+@app.get("/api/tags")
+async def list_tags(principal: Principal = Depends(get_principal),
+                    db: Database = Depends(get_db)):
+    counts: dict[str, int] = {}
+    for r in await db.fetch_all("SELECT tags FROM images WHERE tags != ''"):
+        for t in (r["tags"] or "").split(","):
+            if t:
+                counts[t] = counts.get(t, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {"tags": [{"tag": t, "count": n} for t, n in ordered]}
+
+
+@app.get("/api/history")
+async def prompt_history(q: str = "", limit: int = 40,
+                         principal: Principal = Depends(get_principal),
+                         db: Database = Depends(get_db)):
+    """Distinct prompts actually used, most recent first.
+
+    Read back out of the images table rather than kept separately: the whole
+    point of storing the parameter set on every image was that it becomes the
+    history, the reproducibility trail and the search index at once.
+    """
+    limit = max(1, min(limit, 200))
+    rows = await db.fetch_all(
+        "SELECT params_json, workflow_id, MAX(created_at) AS at, COUNT(*) AS n "
+        "FROM images GROUP BY json_extract(params_json, '$.prompt') "
+        "ORDER BY at DESC LIMIT 400"
+    )
+    needle = q.strip().lower()
+    out = []
+    for r in rows:
+        params = json.loads(r["params_json"])
+        prompt = (params.get("prompt") or "").strip()
+        if not prompt or (needle and needle not in prompt.lower()):
+            continue
+        out.append({"prompt": prompt, "workflow_id": r["workflow_id"],
+                    "used": r["n"], "at": r["at"], "params": params})
+        if len(out) >= limit:
+            break
+    return {"history": out}
+
+
+# --------------------------------------------------------------------------- #
+# presets -- a named workflow + parameter bundle
+# --------------------------------------------------------------------------- #
+class PresetIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    workflow_id: str
+    params: dict
+
+
+def _preset_row(r) -> dict:
+    return {"id": r["id"], "name": r["name"], "workflow_id": r["workflow_id"],
+            "params": json.loads(r["params_json"]), "created_at": r["created_at"],
+            "updated_at": r["updated_at"]}
+
+
+@app.get("/api/presets")
+async def list_presets(principal: Principal = Depends(get_principal),
+                       db: Database = Depends(get_db)):
+    rows = await db.fetch_all("SELECT * FROM presets ORDER BY name")
+    return {"presets": [_preset_row(r) for r in rows]}
+
+
+@app.post("/api/presets")
+async def save_preset(req: PresetIn,
+                      principal: Principal = Depends(get_principal),
+                      reg: Registry = Depends(get_registry),
+                      db: Database = Depends(get_db)):
+    if reg.get(req.workflow_id) is None:
+        raise HTTPException(400, f"unknown workflow: {req.workflow_id}")
+    name = " ".join(req.name.split())
+    ts = now()
+    existing = await db.fetch_one("SELECT id FROM presets WHERE name = ?", (name,))
+    preset_id = existing["id"] if existing else uuid.uuid4().hex
+    # Saving over a name updates it rather than erroring: renaming to reuse a
+    # name is a chore, and there is one user.
+    await db.execute(
+        "INSERT INTO presets (id, name, workflow_id, params_json, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+        "  workflow_id=excluded.workflow_id, params_json=excluded.params_json, "
+        "  updated_at=excluded.updated_at",
+        (preset_id, name, req.workflow_id, json.dumps(req.params), ts, ts),
+    )
+    return _preset_row(await db.fetch_one("SELECT * FROM presets WHERE id = ?", (preset_id,)))
+
+
+@app.delete("/api/presets/{preset_id}")
+async def delete_preset(preset_id: str,
+                        principal: Principal = Depends(get_principal),
+                        db: Database = Depends(get_db)):
+    row = await db.fetch_one("SELECT id FROM presets WHERE id = ?", (preset_id,))
+    if row is None:
+        raise HTTPException(404, "no such preset")
+    await db.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
+    return {"deleted": preset_id}
+
+
+# --------------------------------------------------------------------------- #
+# gallery
+# --------------------------------------------------------------------------- #
 
 
 @app.get("/api/images/{image_id}/file")

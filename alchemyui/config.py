@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     queue_reorder_window: int = 6
     queue_max_skips: int = 3
 
+    # Batch generation runs n separate jobs, sequentially.
+    max_batch: int = 8
+
     # ----------------------------------------------------------------------
     @property
     def is_dev(self) -> bool:

@@ -77,6 +77,12 @@ class Job:
     error_detail: str | None = None
 
     images: list[dict] = field(default_factory=list)
+    # Latest live preview frame, held in memory only: it is worthless the
+    # moment the next one arrives, and writing every frame to disk would
+    # churn for nothing.
+    preview: bytes | None = None
+    preview_media: str = "image/jpeg"
+    preview_seq: int = 0
 
     _cancel: asyncio.Event = field(default_factory=asyncio.Event)
     _finished: asyncio.Event = field(default_factory=asyncio.Event)
@@ -105,6 +111,7 @@ class Job:
             },
             "params": self.params,
             "cold_start": self.cold_start,
+            "preview_seq": self.preview_seq,
             "error_text": self.error_text,
             "error_detail": self.error_detail,
             "images": self.images,
@@ -144,15 +151,27 @@ class QueueManager:
         return f"{workflow_id}|{checkpoint}"
 
     def _seed_for(self, workflow_id: str, checkpoint: str) -> list[float]:
+        """Seed a workflow+checkpoint estimate before anything has been measured.
+
+        The checkpoint knows its own speed. The workflow's own `est` is quoted
+        against its default checkpoint, so what it contributes is a *ratio* --
+        how much extra sampling it does -- not an absolute figure. A quality
+        chain that costs 2.9x a plain generation costs 2.9x on either family;
+        taking its SDXL seconds literally would have made SD1.5 look as slow
+        as SDXL.
+        """
         w = self.reg.get(workflow_id)
         c = self.reg.checkpoint(checkpoint) if checkpoint else None
-        # The checkpoint knows its own speed; the workflow knows what it adds
-        # on top (a quality chain samples several times over).
-        sps = c.est_seconds_per_step if c else (w.est_seconds_per_step if w else 3.0)
-        load = c.est_load_s if c else (w.est_load_s if w else 30.0)
-        if w and c and w.est_seconds_per_step > c.est_seconds_per_step:
-            sps = w.est_seconds_per_step
-        return [sps, load]
+        if w is None:
+            return [c.est_seconds_per_step, c.est_load_s] if c else [3.0, 30.0]
+        if c is None:
+            return [w.est_seconds_per_step, w.est_load_s]
+
+        base = self.reg.checkpoint(w.checkpoint)
+        ratio = 1.0
+        if base is not None and base.est_seconds_per_step > 0:
+            ratio = max(1.0, w.est_seconds_per_step / base.est_seconds_per_step)
+        return [c.est_seconds_per_step * ratio, c.est_load_s]
 
     async def start(self) -> None:
         for w in self.reg.all():
@@ -512,6 +531,7 @@ class QueueManager:
                     if job.state not in TERMINAL:
                         job.state = JobState.COMPLETED
                     await self._persist_job(job)
+                    job.preview = None          # the real image supersedes it
                     job._done.set()
                     await self._emit({"type": "job", "job": job.public()})
                     await self._broadcast()
@@ -642,6 +662,19 @@ class QueueManager:
         if t == "_ws_disconnected":
             self._comfy_connected = False
             await self._broadcast()
+            return
+        if t == "_preview":
+            # Frames carry no prompt_id, but only one job ever holds the GPU,
+            # so the active one is unambiguous.
+            job = self._active
+            if job is not None:
+                job.preview = d["bytes"]
+                job.preview_media = d["media_type"]
+                job.preview_seq += 1
+                # The frame itself is fetched over HTTP; SSE only says a newer
+                # one exists, so a 50KB image never rides the event stream.
+                await self._emit({"type": "preview", "job_id": job.id,
+                                  "seq": job.preview_seq})
             return
         if t == "status":
             info = ((d.get("status") or {}).get("exec_info") or {})

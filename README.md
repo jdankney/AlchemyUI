@@ -30,6 +30,11 @@ One GPU, strict FIFO, honest ETAs. No accounts, no metering, no cloud.
   cropped square around it as you add it, so a bad one is refused there rather
   than killing a job minutes later.
 
+Across all of them: a **model picker** (SDXL and SD1.5, with resolution and
+sampling following the model), **batch generation**, **live previews** while a
+job samples, **favourites and tags**, **prompt history with search**, and
+**saved presets**.
+
 Any image in the gallery can go straight back into the editors: **Edit** drops
 it into Transform, **Enhance** runs the quality chain over it.
 
@@ -42,7 +47,7 @@ You need a working ComfyUI (with its own Python environment) and
 
 ```bash
 # 1. ComfyUI, in its own terminal
-cd ~/ComfyUI && ./venv/bin/python main.py --fp8_e4m3fn-unet
+cd ~/ComfyUI && ./venv/bin/python main.py --fp8_e4m3fn-unet --preview-method auto
 
 # 2. AlchemyUI
 cd ~/Documents/Coding/AlchemyUI
@@ -54,13 +59,21 @@ uv run uvicorn alchemyui.app:app --host 127.0.0.1 --port 8300 --timeout-graceful
 
 Open <http://127.0.0.1:8300>.
 
+`--preview-method auto` is what makes live previews appear while a job
+samples; ComfyUI defaults to none, and without it everything else still works.
+
 `--timeout-graceful-shutdown 5` is not optional in practice: an open SSE
 connection never closes on its own, so without the bound the process hangs on
 SIGTERM until something kills it.
 
 ### Models
 
-All four workflows point at `RealVisXL_V5.0_fp16.safetensors` in
+Models are listed in the `checkpoints` block of `workflows/registry.json`,
+each with its own native resolutions and sampling defaults — SD1.5 and SDXL
+want very different numbers. A workflow declares which families its template
+suits, and the picker only offers models it can actually run.
+
+The default checkpoint is `RealVisXL_V5.0_fp16.safetensors` in
 `~/ComfyUI/models/checkpoints/`. To use a different SDXL checkpoint, change the
 `checkpoint` field in `workflows/registry.json` — no code changes.
 
@@ -152,7 +165,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 120 tests, no GPU and no ComfyUI needed
+uv run pytest -q          # 140 tests, no GPU and no ComfyUI needed
 uv run ruff check .
 ```
 
@@ -169,7 +182,7 @@ never completes.
 alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
                   registry.py workflows · storage.py files+uploads
                   faces.py reference validation · cli.py validate
-workflows/        registry.json + seven API-format templates
+workflows/        registry.json (workflows + checkpoints) + seven templates
 deploy/           systemd user unit, idempotent install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
 tests/            pytest; no GPU required

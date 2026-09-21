@@ -14,6 +14,10 @@ const api = {
     const r = await fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) });
     if (!r.ok) throw await err(r); return r.json();
   },
+  async patch(p, b) {
+    const r = await fetch(p, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b || {}) });
+    if (!r.ok) throw await err(r); return r.json();
+  },
   async del(p) { const r = await fetch(p, { method: 'DELETE' }); if (!r.ok) throw await err(r); return r.json(); },
 };
 async function err(r) {
@@ -42,6 +46,11 @@ const ICONS = {
   sparkle: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z',
   gem: 'M6 3h12l4 6-10 12L2 9l4-6zM2 9h20M12 21L8 9l4-6 4 6-4 12',
   edit: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z',
+  star: 'M12 3l2.9 6 6.6.9-4.8 4.6 1.2 6.5-5.9-3.1-5.9 3.1 1.2-6.5L2.5 9.9 9.1 9 12 3z',
+  search: 'M21 21l-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0z',
+  clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 6v6l4 2',
+  save: 'M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8',
+  layers: 'M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5',
   face: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM8.5 10h.01M15.5 10h.01M8.5 15a5 5 0 0 0 7 0',
   stop: 'M7 7h10v10H7z',
   x: 'M18 6L6 18M6 6l12 12',
@@ -97,6 +106,14 @@ const S = {
     face_weight: null, face_weight_v2: null,                   // Phase 4
     face_start: null, face_end: null, lora_name: '', lora_strength: null,
   },
+  checkpoint: null,       // chosen model, or null for the workflow's default
+  batch: 1,
+  presets: [],
+  tags: [],
+  filter: { q: '', favorite: false, tag: '' },
+  historyOpen: false,
+  history: [],
+  previews: {},           // job id -> object URL of the latest live frame
   refs: [],               // every reference face uploaded so far
   pickedRefs: [],         // the ids going into the next likeness job
   refUploading: false,
@@ -123,6 +140,18 @@ const S = {
 // swaps in its declared twin, which is a separate registry entry with its own
 // validated template rather than a flag on this one.
 const byKind = kind => S.workflows.find(w => w.kind === kind && !w.id.endsWith('-hq'));
+// The chosen model, falling back to the workflow's own default when the
+// current pick belongs to a family this workflow cannot run.
+function activeCheckpoint(w) {
+  const list = w.checkpoints || [];
+  return list.find(c => c.name === S.checkpoint) || list.find(c => c.name === w.checkpoint)
+    || list[0] || null;
+}
+const aspectsOf = w => {
+  const c = activeCheckpoint(w);
+  return (c && Object.keys(c.aspects || {}).length) ? c.aspects : (w.aspects || {});
+};
+const defaultsOf = w => ({ ...(w.defaults || {}), ...((activeCheckpoint(w) || {}).defaults || {}) });
 const baseWorkflow = () => byKind(S.mode) || S.workflows.find(w => w.id === S.wf);
 const hqTwin = w => w && w.hq_variant ? S.workflows.find(x => x.id === w.hq_variant) : null;
 const workflow = () => {
@@ -151,6 +180,7 @@ function connectEvents() {
     else if (d.type === 'progress') onProgress(d);
     else if (d.type === 'job') onJob(d.job);
     else if (d.type === 'image') onImage(d.image);
+    else if (d.type === 'preview') onPreview(d);
   };
   es.onerror = () => { S.connected = false; renderTopbar(); /* browser retries */ };
 }
@@ -176,12 +206,38 @@ function onProgress(d) {
   renderJobCard(j.id);
 }
 
+// The frame itself comes over HTTP; the event only says a newer one exists.
+// One fetch in flight per job at a time, so a slow connection drops frames
+// instead of queueing them up.
+const _previewBusy = {};
+async function onPreview(d) {
+  if (_previewBusy[d.job_id]) return;
+  _previewBusy[d.job_id] = true;
+  try {
+    const r = await fetch(`/api/jobs/${d.job_id}/preview?v=${d.seq}`);
+    if (r.ok) {
+      const url = URL.createObjectURL(await r.blob());
+      if (S.previews[d.job_id]) URL.revokeObjectURL(S.previews[d.job_id]);
+      S.previews[d.job_id] = url;
+      renderJobCard(d.job_id);
+    }
+  } catch { /* a dropped frame is not worth reporting */ }
+  _previewBusy[d.job_id] = false;
+}
+
+function releasePreview(jobId) {
+  if (!S.previews[jobId]) return;
+  URL.revokeObjectURL(S.previews[jobId]);
+  delete S.previews[jobId];
+}
+
 function onJob(job) {
   const i = S.jobs.findIndex(x => x.id === job.id);
   if (i >= 0) S.jobs[i] = { ...S.jobs[i], ...job };
   else S.jobs.unshift(job);
   // A completed job's images speak for it; the placeholder card steps aside.
   if (job.status === 'cancelled' || job.status === 'completed') {
+    releasePreview(job.id);
     setTimeout(() => { S.jobs = S.jobs.filter(x => x.id !== job.id || x.status === 'failed'); renderJobCards(); }, 400);
   }
   renderJobCards();
@@ -212,6 +268,7 @@ function render() {
       h('div', { class: 'wrap' }, composer(), gallery())),
     h('div', { class: 'toasts', id: 'toasts' }),
     S.lightbox ? lightbox() : null,
+    historyPanel(),
   );
   autosize(document.getElementById('prompt'));
 }
@@ -294,6 +351,7 @@ function composer() {
   return h('div', { class: 'composer' },
     modeControl(),
     h('form', { class: 'compose-card', onsubmit: submit },
+      modelPicker(w),
       needsImage ? uploadZone(w) : null,
       needsRefs ? referenceStrip(w) : null,
       needsMask && S.upload ? maskEditor() : null,
@@ -309,9 +367,10 @@ function composer() {
       w.kind === 'img2img' ? denoiseField(w) : null,
 
       h('div', { class: 'compose-tools' },
-        w.aspects && Object.keys(w.aspects).length && w.inputs.includes('aspect')
-          ? aspectControl(w, f.aspect || w.defaults.aspect || Object.keys(w.aspects)[0]) : null,
+        Object.keys(aspectsOf(w)).length && w.inputs.includes('aspect')
+          ? aspectControl(w, f.aspect || defaultsOf(w).aspect || Object.keys(aspectsOf(w))[0]) : null,
         hqToggle(),
+        batchControl(),
         h('div', { class: 'spacer' }),
         h('button', {
           type: 'submit', class: 'btn btn-primary',
@@ -333,7 +392,7 @@ function composer() {
             h('label', { for: 'negative' }, 'Negative prompt — what to keep out'),
             h('textarea', {
               id: 'negative', class: 'input', rows: 2,
-              value: f.negative == null ? (w.defaults.negative || '') : f.negative,
+              value: f.negative == null ? (defaultsOf(w).negative || '') : f.negative,
               oninput: e => { f.negative = e.target.value; },
             })),
 
@@ -344,9 +403,9 @@ function composer() {
             h('summary', {}, icon('chevron', 'icon-sm chev'), 'Advanced'),
             h('div', { class: 'panel-body' },
               sliderField('steps', 'Steps', w.limits.steps || [1, 60], 1,
-                f.steps ?? w.defaults.steps, v => { S.form.steps = v; }, v => String(v)),
+                f.steps ?? defaultsOf(w).steps, v => { S.form.steps = v; }, v => String(v)),
               sliderField('cfg', 'CFG — prompt adherence', w.limits.cfg || [1, 15], 0.1,
-                f.cfg ?? w.defaults.cfg, v => { S.form.cfg = v; }, v => v.toFixed(1)),
+                f.cfg ?? defaultsOf(w).cfg, v => { S.form.cfg = v; }, v => v.toFixed(1)),
               w.inputs.includes('grow_mask') ? sliderField(
                 'grow_mask', 'Mask feather — blends the seam', w.limits.grow_mask || [0, 64], 1,
                 f.grow_mask ?? w.defaults.grow_mask, v => { S.form.grow_mask = v; },
@@ -365,7 +424,49 @@ function composer() {
 
       h('div', { class: 'compose-hint', id: 'compose-hint' }, ...hintKids()),
     ),
+    presetBar(),
   );
+}
+
+// The model picker. Switching model switches resolution and sampling with it,
+// because those belong to the checkpoint rather than to the workflow.
+function modelPicker(w) {
+  const list = w.checkpoints || [];
+  if (list.length < 2) return null;
+  const active = activeCheckpoint(w);
+  const timing = (w.timings || {})[active?.name] || {};
+  return h('div', { class: 'model-row' },
+    h('span', { class: 'select-wrap' },
+      h('select', {
+        class: 'select', 'aria-label': 'Model',
+        onchange: e => {
+          S.checkpoint = e.target.value;
+          // Resolution and sampling come from the model, so anything the
+          // person did not explicitly set is re-derived rather than carried.
+          S.form.aspect = null; S.form.steps = null; S.form.cfg = null;
+          render();
+        },
+      }, list.map(c => h('option', { value: c.name, selected: c.name === active?.name },
+        `${c.label} · ${c.family.toUpperCase()}`)))),
+    timing.resident
+      ? h('span', { class: 'badge is-on', title: 'Already loaded — no swap' },
+          h('i', { class: 'dot' }), 'loaded')
+      : h('span', { class: 'badge', title: `Loading this model costs about ${Math.round(timing.load_seconds || 0)}s` },
+          h('i', { class: 'dot' }), `+${Math.round(timing.load_seconds || 0)}s to load`),
+    h('div', { class: 'spacer' }),
+    active?.blurb ? h('span', { class: 'small faint' }, active.blurb) : null);
+}
+
+// n separate jobs rather than one batched graph: they queue, report and
+// cancel individually, and a 6GB card will not hold a batched SDXL latent.
+function batchControl() {
+  const counts = [1, 2, 4, 8];
+  return h('span', { class: 'seg seg-batch', role: 'group', 'aria-label': 'How many' },
+    counts.map(n => h('button', {
+      type: 'button', class: n === S.batch ? 'is-active' : '',
+      title: n === 1 ? 'One image' : `${n} images, one after another`,
+      onclick: () => { S.batch = n; render(); },
+    }, n === 1 ? '×1' : '×' + n)));
 }
 
 function hqToggle() {
@@ -851,10 +952,11 @@ function denoiseField(w) {
 }
 
 function aspectControl(w, current) {
-  const keys = Object.keys(w.aspects);
+  const aspects = aspectsOf(w);
+  const keys = Object.keys(aspects);
   return h('div', { class: 'seg', role: 'group', 'aria-label': 'Aspect ratio' },
     keys.map(k => {
-      const [cw, ch] = w.aspects[k];
+      const [cw, ch] = aspects[k];
       // A tiny box in the actual proportions reads faster than the numbers.
       const box = 13;
       const bw = cw >= ch ? box : Math.round(box * cw / ch);
@@ -916,17 +1018,21 @@ function seedField() {
 function hintKids() {
   const w = workflow();
   if (!w) return [];
-  let steps = S.form.steps ?? w.defaults.steps;
+  const ckpt = activeCheckpoint(w);
+  const t = (w.timings || {})[ckpt?.name] || w;
+  let steps = S.form.steps ?? defaultsOf(w).steps;
   // img2img runs steps*denoise of them, so the honest estimate is shorter.
-  if (w.kind === 'img2img') steps *= (S.form.denoise ?? w.defaults.denoise ?? 1);
-  const cold = !w.resident;
-  const est = Math.round(steps * w.seconds_per_step + (cold ? w.load_seconds : 0));
+  if (w.kind === 'img2img') steps *= (S.form.denoise ?? defaultsOf(w).denoise ?? 1);
+  const cold = !t.resident;
+  let est = Math.round(steps * t.seconds_per_step + (cold ? t.load_seconds : 0));
+  if (S.batch > 1) est *= S.batch;
   const ahead = activeJobs().length;
   const kids = [
     h('span', {}, w.display),
     h('span', { class: 'sep' }, '·'),
-    h('span', { title: cold ? 'The checkpoint is not loaded — this run pays the swap' : 'Checkpoint already loaded' },
-      cold ? `~${fmtDur(est)} (incl. ~${fmtDur(w.load_seconds)} cold start)` : `~${fmtDur(est)}`),
+    h('span', { title: cold ? 'This model is not loaded — the run pays the swap' : 'Model already loaded' },
+      (S.batch > 1 ? `~${fmtDur(est)} for ${S.batch}` : `~${fmtDur(est)}`)
+      + (cold ? ` (incl. ~${fmtDur(t.load_seconds)} load)` : '')),
   ];
   if (ahead) kids.push(h('span', { class: 'sep' }, '·'), h('span', {}, `${plural(ahead, 'job')} ahead`));
   if (w.inputs.includes('scale_by')) {
@@ -958,16 +1064,70 @@ function focusPrompt() {
 /* ----------------------------------------------------------------- gallery */
 function gallery() {
   return h('div', { class: 'gallery' },
-    h('div', { class: 'gallery-head' }, h('h2', {}, 'Gallery'),
-      h('span', { class: 'small faint', id: 'gallery-count' }, galleryCount())),
+    h('div', { class: 'gallery-head' },
+      h('h2', {}, 'Gallery'),
+      h('span', { class: 'small faint', id: 'gallery-count' }, galleryCount()),
+      h('div', { class: 'spacer' }),
+      filterBar()),
+    S.filter.tag || S.filter.q || S.filter.favorite ? null : tagCloud(),
     h('div', { class: 'grid', id: 'grid' }, ...gridKids()));
+}
+
+function filterBar() {
+  const f = S.filter;
+  return h('div', { class: 'filters' },
+    h('span', { class: 'search' },
+      icon('search', 'icon-sm'),
+      h('input', {
+        type: 'search', class: 'input', placeholder: 'Search prompts…', value: f.q,
+        'aria-label': 'Search the gallery',
+        oninput: e => { f.q = e.target.value; reloadGallery(); },
+      })),
+    h('button', {
+      type: 'button', class: 'btn btn-sm' + (f.favorite ? ' is-on' : ''),
+      'aria-pressed': f.favorite ? 'true' : 'false', title: 'Show only favourites',
+      onclick: () => { f.favorite = !f.favorite; reloadGallery(); render(); },
+    }, icon('star', 'icon-sm'), 'Favourites'),
+    f.tag ? h('button', {
+      type: 'button', class: 'btn btn-sm is-on', title: 'Clear the tag filter',
+      onclick: () => { f.tag = ''; reloadGallery(); render(); },
+    }, f.tag, icon('x', 'icon-sm')) : null);
+}
+
+function tagCloud() {
+  if (!S.tags.length) return null;
+  return h('div', { class: 'tag-cloud' },
+    S.tags.slice(0, 14).map(t => h('button', {
+      type: 'button', class: 'tag',
+      onclick: () => { S.filter.tag = t.tag; reloadGallery(); render(); },
+    }, t.tag, h('span', { class: 'n' }, t.count))));
+}
+
+// The filters run server-side, because the gallery is capped at what has been
+// fetched -- filtering only what is in memory would quietly hide older matches.
+let _galleryTimer = null;
+function reloadGallery(delay = 220) {
+  clearTimeout(_galleryTimer);
+  _galleryTimer = setTimeout(async () => {
+    const f = S.filter;
+    const qs = new URLSearchParams({ limit: '200' });
+    if (f.q.trim()) qs.set('q', f.q.trim());
+    if (f.favorite) qs.set('favorite', 'true');
+    if (f.tag) qs.set('tag', f.tag);
+    try {
+      S.images = (await api.get('/api/images?' + qs)).images;
+      renderGallery();
+    } catch (e) { toast(e.message, true); }
+  }, delay);
 }
 function galleryCount() { return S.images.length ? plural(S.images.length, 'image') : ''; }
 function gridKids() {
   const cards = [...failedJobs(), ...activeJobs()].map(jobCard);
   if (!cards.length && !S.images.length) {
+    const filtering = S.filter.q || S.filter.favorite || S.filter.tag;
     return [h('div', { class: 'empty-note', style: 'grid-column:1/-1' },
-      'Nothing generated yet. Describe something above and hit Generate.')];
+      filtering ? 'Nothing matches those filters.'
+        : 'Nothing generated yet. Describe something above and hit Generate.')];
   }
   return [...cards, ...S.images.map(imageCard)];
 }
@@ -1009,7 +1169,9 @@ function jobCard(job) {
 
   const elapsed = job.started_at ? (Date.now() / 1000 - job.started_at) : null;
 
-  return h('div', { class: 'card card-job', id: 'job-' + job.id },
+  const preview = S.previews[job.id];
+  return h('div', { class: 'card card-job' + (preview ? ' has-preview' : ''), id: 'job-' + job.id },
+    preview ? h('img', { class: 'job-preview', src: preview, alt: 'Preview of the image being generated' }) : null,
     h('div', { class: 'state' },
       h('i', { class: 'pulse' }), h('span', {}, state),
       h('div', { class: 'spacer' }),
@@ -1056,8 +1218,16 @@ function imageCard(img) {
       onclick: () => { S.lightbox = img; render(); },
     }),
     h('div', { class: 'card-foot' },
+      h('button', {
+        class: 'fav' + (img.favorite ? ' is-on' : ''), type: 'button',
+        title: img.favorite ? 'Remove from favourites' : 'Add to favourites',
+        'aria-pressed': img.favorite ? 'true' : 'false',
+        onclick: e => { e.stopPropagation(); toggleFavorite(img); },
+      }, icon('star', 'icon-sm')),
       h('span', { class: 'mono', title: 'Seed' }, String(img.seed ?? '')),
       h('div', { class: 'spacer' }),
+      img.tags?.length ? h('span', { class: 'faint' }, img.tags[0]
+        + (img.tags.length > 1 ? ` +${img.tags.length - 1}` : '')) : null,
       h('span', { class: 'faint' }, img.width && img.height ? `${img.width}×${img.height}` : '')));
 }
 
@@ -1084,9 +1254,27 @@ function lightbox() {
       // through the filesystem -- the server copies it into ComfyUI's input/.
       h('button', { class: 'btn', onclick: () => editImage(img, 'img2img') }, icon('edit', 'icon-sm'), 'Edit'),
       h('button', { class: 'btn', onclick: () => editImage(img, 'enhance') }, icon('gem', 'icon-sm'), 'Enhance'),
+      h('button', {
+        class: 'btn' + (img.favorite ? ' is-on' : ''),
+        onclick: () => toggleFavorite(img, true),
+      }, icon('star', 'icon-sm'), img.favorite ? 'Favourited' : 'Favourite'),
       h('button', { class: 'btn btn-ghost btn-danger', onclick: () => delImage(img.id) }, icon('trash', 'icon-sm'), 'Delete'),
       h('button', { class: 'btn btn-ghost', onclick: close }, icon('x', 'icon-sm'), 'Close')),
     h('img', { src: img.url, alt: p.prompt || 'Generated image' }),
+    h('div', { class: 'lightbox-tags' },
+      (img.tags || []).map(t => h('span', { class: 'tag' }, t,
+        h('button', { type: 'button', 'aria-label': `Remove tag ${t}`,
+          onclick: () => setTags(img, img.tags.filter(x => x !== t)) }, icon('x', 'icon-sm')))),
+      h('input', {
+        type: 'text', class: 'input tag-input', placeholder: 'Add a tag…',
+        'aria-label': 'Add a tag',
+        onkeydown: e => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          const v = e.target.value.trim();
+          if (v) { setTags(img, [...(img.tags || []), v]); e.target.value = ''; }
+        },
+      })),
     h('div', { class: 'lightbox-meta' },
       meta('Prompt', p.prompt),
       meta('Negative', p.negative),
@@ -1155,6 +1343,127 @@ async function editImage(img, mode) {
   }
 }
 
+async function toggleFavorite(img, keepOpen = false) {
+  try {
+    const updated = await api.patch(`/api/images/${img.id}`, { favorite: !img.favorite });
+    Object.assign(img, updated);
+    if (keepOpen && S.lightbox?.id === img.id) S.lightbox = img;
+    if (S.filter.favorite && !img.favorite) S.images = S.images.filter(i => i.id !== img.id);
+    render();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function setTags(img, tags) {
+  try {
+    const updated = await api.patch(`/api/images/${img.id}`, { tags });
+    Object.assign(img, updated);
+    if (S.lightbox?.id === img.id) S.lightbox = img;
+    loadTags();
+    render();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function loadTags() {
+  try { S.tags = (await api.get('/api/tags')).tags; } catch { /* non-essential */ }
+}
+
+/* -------------------------------------------------------- history + presets */
+// Prompt history is read back out of the images table rather than kept
+// separately: storing the full parameter set on every image was what made it
+// the reproducibility trail, and it doubles as the history for free.
+async function openHistory() {
+  S.historyOpen = true; render();
+  try { S.history = (await api.get('/api/history?limit=60')).history; }
+  catch (e) { toast(e.message, true); }
+  render();
+}
+
+function historyPanel() {
+  if (!S.historyOpen) return null;
+  const close = () => { S.historyOpen = false; render(); };
+  return h('div', {
+    class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Prompt history',
+    onclick: e => { if (e.target === e.currentTarget) close(); },
+  },
+    h('div', { class: 'sheet-inner' },
+      h('div', { class: 'row' },
+        icon('clock', 'icon-sm'), h('strong', {}, 'Recent prompts'),
+        h('div', { class: 'spacer' }),
+        h('button', { class: 'btn btn-ghost btn-sm', onclick: close }, icon('x', 'icon-sm'))),
+      h('input', {
+        type: 'search', class: 'input', placeholder: 'Filter…', 'aria-label': 'Filter prompts',
+        oninput: async e => {
+          const q = e.target.value.trim();
+          try { S.history = (await api.get('/api/history?limit=60&q=' + encodeURIComponent(q))).history; }
+          catch { return; }
+          const list = document.getElementById('history-list');
+          if (list) list.replaceChildren(...historyItems());
+        },
+      }),
+      h('div', { class: 'history', id: 'history-list' }, ...historyItems())));
+}
+
+function historyItems() {
+  if (!S.history.length) return [h('div', { class: 'empty-note' }, 'Nothing yet.')];
+  return S.history.map(item => h('div', {
+    class: 'history-row', role: 'button', tabindex: 0,
+    onclick: () => { reuse(item.params); S.historyOpen = false; },
+    onkeydown: e => { if (e.key === 'Enter') { reuse(item.params); S.historyOpen = false; } },
+  },
+    h('div', { class: 'p' }, item.prompt),
+    h('div', { class: 'small faint' },
+      `${modeLabel(item.workflow_id)} · ${item.used > 1 ? item.used + ' images · ' : ''}${agoStr(item.at)}`)));
+}
+const modeLabel = id => S.workflows.find(w => w.id === id)?.display || id;
+const agoStr = ts => {
+  const d = (Date.now() - ts * 1000) / 1000;
+  return d < 60 ? 'just now' : d < 86400 ? fmtDur(d) + ' ago'
+    : new Date(ts * 1000).toLocaleDateString();
+};
+
+async function savePreset() {
+  const w = workflow();
+  const name = prompt('Save these settings as…', '');
+  if (!name || !name.trim()) return;
+  const bundle = { ...S.form, checkpoint: activeCheckpoint(w)?.name, batch: S.batch };
+  try {
+    await api.post('/api/presets', { name: name.trim(), workflow_id: w.id, params: bundle });
+    await loadPresets();
+    toast(`Saved "${name.trim()}".`);
+  } catch (e) { toast(e.message, true); }
+}
+
+function applyPreset(preset) {
+  const w = S.workflows.find(x => x.id === preset.workflow_id);
+  if (w && byKind(w.kind)) { S.mode = w.kind; S.hq = w.id.endsWith('-hq'); }
+  const p = preset.params || {};
+  for (const k of Object.keys(S.form)) if (k in p) S.form[k] = p[k];
+  if (p.checkpoint) S.checkpoint = p.checkpoint;
+  if (p.batch) S.batch = p.batch;
+  render(); focusPrompt();
+}
+
+async function loadPresets() {
+  try { S.presets = (await api.get('/api/presets')).presets; } catch { /* non-essential */ }
+}
+
+async function deletePreset(id) {
+  try { await api.del('/api/presets/' + id); S.presets = S.presets.filter(p => p.id !== id); render(); }
+  catch (e) { toast(e.message, true); }
+}
+
+function presetBar() {
+  return h('div', { class: 'presets' },
+    S.presets.map(p => h('span', { class: 'preset' },
+      h('button', { type: 'button', onclick: () => applyPreset(p), title: p.workflow_id }, p.name),
+      h('button', { type: 'button', class: 'del', 'aria-label': `Delete preset ${p.name}`,
+        onclick: () => deletePreset(p.id) }, icon('x', 'icon-sm')))),
+    h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: savePreset },
+      icon('save', 'icon-sm'), 'Save settings'),
+    h('button', { type: 'button', class: 'btn btn-ghost btn-sm', onclick: openHistory },
+      icon('clock', 'icon-sm'), 'History'));
+}
+
 /* ---------------------------------------------------------------- actions */
 async function submit(e) {
   e.preventDefault();
@@ -1173,8 +1482,11 @@ async function submit(e) {
 
   const body = { workflow_id: w.id, prompt };
   const f = S.form;
+  const ckpt = activeCheckpoint(w);
+  if (ckpt) body.checkpoint = ckpt.name;
+  if (S.batch > 1) body.batch = S.batch;
   if (f.negative != null) body.negative = f.negative;
-  if (w.inputs.includes('aspect')) body.aspect = f.aspect || w.defaults.aspect;
+  if (w.inputs.includes('aspect')) body.aspect = f.aspect || defaultsOf(w).aspect;
   if (f.steps != null) body.steps = f.steps;
   if (f.cfg != null) body.cfg = f.cfg;
   if (f.sampler) body.sampler = f.sampler;
@@ -1293,6 +1605,7 @@ async function boot() {
     ]);
     S.refs = refs.references;
     S.loras = loras.loras;
+    await Promise.all([loadPresets(), loadTags()]);
   } catch { /* the likeness mode will just start empty */ }
 
   await recoverState();

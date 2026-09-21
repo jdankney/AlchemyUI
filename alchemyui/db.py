@@ -21,7 +21,9 @@ _SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
 # Additive, idempotent migrations for DBs created before a column existed.
 # Fresh DBs get the column straight from schema.sql; these just catch up
 # existing ones. "duplicate column name" means it's already applied.
-_MIGRATIONS: list[str] = []
+_MIGRATIONS: list[str] = [
+    "ALTER TABLE images ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+]
 
 
 class Database:

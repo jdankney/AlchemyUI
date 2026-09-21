@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import struct
 import uuid
 from collections.abc import AsyncIterator
 
@@ -249,8 +250,10 @@ class ComfyClient:
         delivery on clientId, and a persistent connection cannot miss the
         events that land in the gap between two jobs.
 
-        Binary frames are live preview images. Phase 1 does not show them, but
-        they must not break the reader.
+        Binary frames are live preview images, decoded here and yielded as a
+        `_preview` event. They only arrive at all if ComfyUI was launched with
+        --preview-method (it defaults to none), so their absence is normal and
+        must never look like a fault.
         """
         backoff = 1.0
         while True:
@@ -263,7 +266,10 @@ class ComfyClient:
                     yield {"type": "_ws_connected", "data": {}}
                     async for raw in ws:
                         if isinstance(raw, bytes | bytearray):
-                            continue  # preview frames -- Phase 5
+                            frame = _decode_preview(bytes(raw))
+                            if frame is not None:
+                                yield {"type": "_preview", "data": frame}
+                            continue
                         try:
                             msg = json.loads(raw)
                         except json.JSONDecodeError:
@@ -277,6 +283,27 @@ class ComfyClient:
                 yield {"type": "_ws_disconnected", "data": {"error": repr(e)}}
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+
+# ComfyUI's binary envelope: a big-endian uint32 event type, then the payload.
+# For PREVIEW_IMAGE the payload is itself a uint32 image format followed by the
+# encoded image (server.py: send_image / encode_bytes, protocol.py).
+_BINARY_PREVIEW = 1
+_BINARY_PREVIEW_WITH_METADATA = 4
+_IMAGE_FORMATS = {1: "image/jpeg", 2: "image/png"}
+
+
+def _decode_preview(raw: bytes) -> dict | None:
+    if len(raw) < 8:
+        return None
+    event = struct.unpack(">I", raw[:4])[0]
+    if event not in (_BINARY_PREVIEW, _BINARY_PREVIEW_WITH_METADATA):
+        return None
+    media = _IMAGE_FORMATS.get(struct.unpack(">I", raw[4:8])[0])
+    if media is None:
+        return None
+    data = raw[8:]
+    return {"media_type": media, "bytes": data} if data else None
 
 
 _comfy: ComfyClient | None = None
