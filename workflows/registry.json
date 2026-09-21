@@ -135,7 +135,8 @@
       "est": {
         "seconds_per_step": 5.25,
         "load_s": 35
-      }
+      },
+      "hq_variant": "txt2img-sdxl-hq"
     },
     "img2img-sdxl": {
       "display": "Transform an image",
@@ -511,6 +512,363 @@
       "output_node": "9",
       "est": {
         "seconds_per_step": 5.25,
+        "load_s": 35
+      }
+    },
+    "enhance-sdxl": {
+      "display": "Enhance",
+      "kind": "enhance",
+      "template": "sdxl_enhance.v1.api.json",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "blurb": "Upscale, add detail, and clean up faces. Roughly triples the wait.",
+      "requires": [
+        "image"
+      ],
+      "inputs": [
+        "prompt",
+        "negative",
+        "image",
+        "scale_by",
+        "refine",
+        "refine_steps",
+        "face_denoise",
+        "face_guide",
+        "seed",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "scale_by": {
+          "node": "22",
+          "field": "scale_by"
+        },
+        "refine": {
+          "node": "24",
+          "field": "denoise"
+        },
+        "refine_steps": {
+          "node": "24",
+          "field": "steps"
+        },
+        "face_denoise": {
+          "node": "27",
+          "field": "denoise"
+        },
+        "face_guide": {
+          "node": "27",
+          "field": "guide_size"
+        },
+        "hq_seed": {
+          "node": "24",
+          "field": "seed"
+        },
+        "face_seed": {
+          "node": "27",
+          "field": "seed"
+        },
+        "cfg": {
+          "node": "24",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "24",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "24",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "cfg": 6.5,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "scale_by": 0.38,
+        "refine": 0.35,
+        "refine_steps": 14,
+        "face_denoise": 0.4,
+        "face_guide": 512
+      },
+      "limits": {
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "scale_by": [
+          0.2,
+          0.6
+        ],
+        "refine": [
+          0.15,
+          0.6
+        ],
+        "refine_steps": [
+          10,
+          40
+        ],
+        "face_denoise": [
+          0.2,
+          0.6
+        ],
+        "face_guide": [
+          384,
+          768
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "24",
+      "stages": [
+        {
+          "node": "24",
+          "label": "Refining detail",
+          "weight": 2.0
+        },
+        {
+          "node": "27",
+          "label": "Faces",
+          "weight": 0.4
+        }
+      ],
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 12.0,
+        "load_s": 35
+      },
+      "_chain_note": "Two settings were tuned against measured runs on a GTX 1660 Ti rather than taken from the node defaults. force_inpaint is False in the template: with it True, Impact Pack falls back to sampling the entire crop whenever the detected face is already larger than guide_size, which on a portrait means re-rendering the whole image for no resolution gain (~5 minutes here). False makes it skip that case, which is the point of a detail pass. refine_steps is 14, not 25: the hi-res pass runs at denoise 0.35, so 25 steps traverses the same short stretch of the schedule far more finely than the result justifies."
+    },
+    "txt2img-sdxl-hq": {
+      "display": "Generate (SDXL, high quality)",
+      "kind": "txt2img",
+      "template": "sdxl_txt2img_hq.v1.api.json",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "blurb": "The full quality chain in one go. Roughly triples the wait.",
+      "requires": [],
+      "inputs": [
+        "prompt",
+        "negative",
+        "aspect",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler",
+        "scale_by",
+        "refine",
+        "refine_steps",
+        "face_denoise",
+        "face_guide"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "width": {
+          "node": "5",
+          "field": "width"
+        },
+        "height": {
+          "node": "5",
+          "field": "height"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "scale_by": {
+          "node": "22",
+          "field": "scale_by"
+        },
+        "refine": {
+          "node": "24",
+          "field": "denoise"
+        },
+        "refine_steps": {
+          "node": "24",
+          "field": "steps"
+        },
+        "face_denoise": {
+          "node": "27",
+          "field": "denoise"
+        },
+        "face_guide": {
+          "node": "27",
+          "field": "guide_size"
+        },
+        "hq_seed": {
+          "node": "24",
+          "field": "seed"
+        },
+        "face_seed": {
+          "node": "27",
+          "field": "seed"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "aspect": "1:1",
+        "scale_by": 0.38,
+        "refine": 0.35,
+        "refine_steps": 14,
+        "face_denoise": 0.4,
+        "face_guide": 512
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "scale_by": [
+          0.2,
+          0.6
+        ],
+        "refine": [
+          0.15,
+          0.6
+        ],
+        "refine_steps": [
+          10,
+          40
+        ],
+        "face_denoise": [
+          0.2,
+          0.6
+        ],
+        "face_guide": [
+          384,
+          768
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "aspects": {
+        "1:1": [
+          1024,
+          1024
+        ],
+        "3:4": [
+          896,
+          1152
+        ],
+        "4:3": [
+          1152,
+          896
+        ],
+        "9:16": [
+          768,
+          1344
+        ],
+        "16:9": [
+          1344,
+          768
+        ]
+      },
+      "progress_node": "3",
+      "stages": [
+        {
+          "node": "3",
+          "label": "Base image",
+          "weight": 1.0
+        },
+        {
+          "node": "24",
+          "label": "Refining detail",
+          "weight": 2.0
+        },
+        {
+          "node": "27",
+          "label": "Faces",
+          "weight": 0.4
+        }
+      ],
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 15.0,
         "load_s": 35
       }
     }

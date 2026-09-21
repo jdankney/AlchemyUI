@@ -18,6 +18,15 @@ One GPU, strict FIFO, honest ETAs. No accounts, no metering, no cloud.
   adjustable brush) drawn straight onto the image.
 - **Extend** — outpainting in any direction, with a to-scale preview of the
   canvas you are about to ask for.
+- **Enhance** — the quality chain: 4× upscale, scale back, a tiled hi-res
+  refine pass, then face cleanup. Works on any image you already have,
+  including one you just inpainted. Roughly triples the wait.
+- **High quality toggle** on Generate — the same chain welded onto a fresh
+  generation, as one job. Measured at about 2.8× a plain generation on a
+  GTX 1660 Ti (372s against 133s).
+
+Any image in the gallery can go straight back into the editors: **Edit** drops
+it into Transform, **Enhance** runs the quality chain over it.
 
 ---
 
@@ -57,6 +66,11 @@ Editing uses the same checkpoint as generation. RealVisXL is not an
 *inpainting* checkpoint, so inpainted regions can show a faint seam; the
 "mask feather" slider is what trades that against how much of the original
 is preserved.
+
+The quality chain additionally needs `4xNMKDSuperscale_4xNMKDSuperscale.pt`
+in `models/upscale_models/` and `bbox/face_yolov8m.pt` in
+`models/ultralytics/bbox/`, plus the Impact Pack custom nodes.
+`alchemyui validate --live` checks all of it.
 
 ---
 
@@ -127,7 +141,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 83 tests, no GPU and no ComfyUI needed
+uv run pytest -q          # 99 tests, no GPU and no ComfyUI needed
 uv run ruff check .
 ```
 
@@ -143,7 +157,7 @@ never completes.
 ```
 alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
                   registry.py workflows · storage.py files+uploads · cli.py validate
-workflows/        registry.json + four API-format templates
+workflows/        registry.json + six API-format templates
 deploy/           systemd user unit, idempotent install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
 tests/            pytest; no GPU required

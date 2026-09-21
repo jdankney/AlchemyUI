@@ -164,6 +164,28 @@ async def attach_mask(upload_id: str,
     return {"id": upload_id, "mask": True, "width": row["width"], "height": row["height"]}
 
 
+@app.post("/api/images/{image_id}/reuse")
+async def reuse_image(image_id: str,
+                      principal: Principal = Depends(get_principal),
+                      settings: Settings = Depends(get_settings),
+                      db: Database = Depends(get_db),
+                      comfy: ComfyClient = Depends(get_comfy)):
+    """Turn a generated image back into an editable source.
+
+    The gallery lives in OUTPUT_DIR and ComfyUI's LoadImage can only see its
+    own input/, so an image has to make that trip before it can be enhanced,
+    transformed or painted over. Going through the same normalisation as a
+    fresh upload means one code path, and one set of guarantees about size.
+    """
+    row = await db.fetch_one("SELECT path FROM images WHERE id = ?", (image_id,))
+    if row is None:
+        raise HTTPException(404, "no such image")
+    path = Path(row["path"])
+    if not path.exists():
+        raise HTTPException(410, "the file for this image is gone from disk")
+    return await _record_upload(db, comfy, settings, path.read_bytes())
+
+
 @app.get("/api/uploads/{upload_id}/file")
 async def upload_file(upload_id: str, mask: bool = False,
                       principal: Principal = Depends(get_principal),
@@ -200,11 +222,18 @@ class GenerateRequest(BaseModel):
     pad_right: int | None = None
     pad_bottom: int | None = None
     feathering: int | None = None
+    # Phase 3 -- the quality chain
+    scale_by: float | None = None
+    refine: float | None = None
+    refine_steps: int | None = None
+    face_denoise: float | None = None
+    face_guide: int | None = None
 
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest,
                    principal: Principal = Depends(get_principal),
+                   settings: Settings = Depends(get_settings),
                    reg: Registry = Depends(get_registry),
                    db: Database = Depends(get_db),
                    qm: QueueManager = Depends(get_queue)):
@@ -235,6 +264,21 @@ async def generate(req: GenerateRequest,
     params = workflow.resolve(raw)
     if not params["prompt"]:
         raise HTTPException(400, "a prompt is required")
+
+    if "scale_by" in workflow.params:
+        # The chain's output edge is 4 x source x scale_by. Rather than let a
+        # large source OOM the sampler, reduce the scaling to fit -- and record
+        # what was actually used, so the params on the image stay truthful.
+        src_w = params.get("width") or (upload["width"] if upload else 0)
+        src_h = params.get("height") or (upload["height"] if upload else 0)
+        longest = max(src_w, src_h)
+        if longest:
+            ceiling = settings.hq_max_edge / (4 * longest)
+            if params["scale_by"] > ceiling:
+                params["scale_by"] = round(max(0.05, ceiling), 4)
+                log.info("job scale_by reduced to %.4f to hold %dpx from a %dpx source",
+                         params["scale_by"], settings.hq_max_edge, longest)
+            params["hq_output_edge"] = round(4 * longest * params["scale_by"])
     if workflow.kind == "outpaint" and not any(
             params.get(f"pad_{s}") for s in ("left", "top", "right", "bottom")):
         raise HTTPException(400, "choose at least one direction to extend into")

@@ -207,6 +207,94 @@ checked against ComfyUI 0.30.0's source rather than guessed.
 - **The time estimate accounts for denoise.** KSampler runs `steps × denoise`
   of them, so quoting the full step count would overstate every img2img run.
 
+## The quality chain (Phase 3)
+
+- **Two ways in, because the spec's single toggle asks for a blind
+  commitment.** The chain roughly triples the wait — on this GPU that is two
+  minutes becoming six — and a toggle on Generate means spending six minutes
+  on an image you have not seen. So there is also an **Enhance** mode that
+  takes an image you already have. You look at the base result, then decide it
+  is worth the wait. The author chose both; the toggle is there as specced,
+  and the Enhance mode is the one that also works on inpaint and outpaint
+  output.
+- **The HQ toggle swaps in a different registry entry**, it does not modify a
+  graph. `txt2img-sdxl` declares `hq_variant: txt2img-sdxl-hq`, and that twin
+  is a separate template validated at boot like any other. Editing a graph at
+  submit time would throw away the guarantee the whole registry design exists
+  to provide.
+- **`scale_by` is recomputed per job to hold a VRAM ceiling.** The chain is
+  `4x upscale -> scale back`, so the output edge is `4 x source x scale_by`.
+  The spec's 0.38 lands at ~1556px from a 1024px base, which fits; from a
+  1344px base it would be 2043px and the sampler runs out of 6GB. Rather than
+  fail, the app lowers `scale_by` so the result fits `HQ_MAX_EDGE` and records
+  what it actually used, so the params stored on the image stay truthful.
+  The chain degrades to "less upscaling" instead of "crashed".
+- **`force_inpaint` is False, against the node's own default of True.**
+  Measured, not guessed. Impact Pack computes an upscale factor for the
+  detected face; when that is <= 1 -- the face is already bigger than
+  `guide_size` -- `force_inpaint: True` falls back to sampling the *entire*
+  crop anyway. On a portrait that means re-rendering the whole 1552px image
+  for no resolution gain: it cost 5 minutes of a 12-minute run. `False` makes
+  it skip that case, which is the whole point of a detail pass. A small face
+  in a large image still gets one.
+- **`refine_steps` is 14, not 25.** The hi-res pass runs at denoise ~0.35, so
+  it only traverses a third of the schedule; 25 steps across that stretch is
+  far finer than the output justifies, and it is the most expensive stage in
+  the chain. Halving it made no visible difference to the result.
+- **Measured cost, after both:** enhancing a 1024px image took 749s before and
+  **248s** after. The HQ toggle (base + chain) is **372s against a 133s base
+  — 2.8x**, which is the "roughly triples" the spec promises. Before the
+  tuning it was 5.6x, and the UI would have been lying about the wait.
+- **Tiled VAE encode and decode (512/64)** are what let a 6GB card touch these
+  resolutions at all. The sampler still sees the whole latent; only the VAE
+  round-trip is tiled.
+- **Every sampler in the chain takes the job's seed.** A multi-stage graph has
+  three of them, and "reuse these settings" would be a lie if reproducing a
+  result needed three numbers instead of one.
+- **FaceDetailer runs without a SAM model.** `sam_model_opt` is optional, and
+  no SAM weights are installed. Its `sam_*` inputs are still *required* by the
+  node, so they carry its own defaults and mean nothing. With no face in
+  frame, FaceDetailer passes the image through untouched — which is why the
+  chain is safe to run on a landscape.
+- **A generated image can be fed back in** (`POST /api/images/{id}/reuse`).
+  The gallery lives in `OUTPUT_DIR` and ComfyUI's `LoadImage` can only see its
+  own `input/`, so an image has to make that trip before it can be enhanced or
+  edited. It goes through the same normalisation as a fresh upload: one code
+  path, one set of guarantees about size.
+
+## Multi-stage progress
+
+- **A job can report progress from more than one node, and the bar has to
+  reflect the whole run.** The HQ graph samples three times — base, hi-res,
+  faces. Following one node would fill the bar a third of the way through a
+  six-minute job and then sit there, which is exactly the "bare spinner"
+  failure the spec's UX rules exist to prevent.
+- Each workflow declares its `stages` with a `weight` — a rough share of the
+  wall clock. Overall progress is the weighted sum. Rough is fine: the weight
+  only has to stop the bar from lying. The Faces stage is weighted low
+  precisely because it usually skips (see `force_inpaint` above); it only
+  under-runs the bar when the pass genuinely happens.
+- **Reaching stage N means every earlier stage is complete**, whether or not
+  it ever reported. Some nodes never emit progress, and without that rule a
+  silent stage would stall the bar at the previous stage's total.
+- The bar never goes backwards: a new stage starting from step 1 would
+  otherwise drop it.
+- The card names the stage — "Refining detail · 7/25", not "Step 7 of 25" —
+  because three passes each counting to 25 otherwise look like one stuck bar.
+- **The ETA switches from modelled to measured** once a job is a little way
+  in: extrapolating from its own elapsed time against overall progress beats a
+  per-step average that knows nothing about which stage is running.
+
+## Deployment
+
+- **Asked and answered (spec §3): ComfyUI stays on the laptop.** Pointing
+  AlchemyUI at the 1080 Ti would put SDXL in contention with Llamacracy's
+  resident model, and 11GB does not hold a 7B GGUF and SDXL at once. No
+  co-residency control has been built, deliberately. If that ever changes, the
+  fix is to call Llamacracy's llama-swap unload endpoint before a generation
+  and let the idle TTL do the rest — extending Llamacracy's "one model
+  resident" rule across both apps rather than inventing a second mechanism.
+
 ## The mask editor
 
 The hardest front-end piece in the project, per the spec. Plain Canvas API, no

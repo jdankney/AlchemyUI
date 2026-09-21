@@ -190,8 +190,14 @@ textarea.input { resize: vertical; min-height: 3.4rem; line-height: 1.5; }
 }
 
 /* ------------------------------------------------------ Phase 2: editing */
-.seg-modes { margin-bottom: 10px; }
+/* five modes now -- wrap rather than overflow on a narrow window */
+.seg-modes { margin-bottom: 10px; flex-wrap: wrap; }
 .seg-modes button { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; }
+@media (max-width: 560px) {
+  .seg-modes { width: 100%; }
+  .seg-modes button { flex: 1; justify-content: center; padding: 6px 8px; }
+  .seg-modes button span { display: none; }   /* icons only when it gets tight */
+}
 
 /* upload */
 .dropzone {

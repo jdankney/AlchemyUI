@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     # are then snapped to a multiple of 8, which the VAE requires.
     upload_max_edge: int = 1536
 
+    # --- quality chain (Phase 3) -------------------------------------------
+    # The chain upscales 4x and scales back down. On a 1024px base the spec's
+    # 0.38 lands at ~1556px, which fits; on a 1344px one it would be 2043px
+    # and the sampler OOMs. scale_by is reduced per job to hold this ceiling,
+    # so the chain degrades to "less upscaling" instead of "failed".
+    hq_max_edge: int = 1600
+
     # --- identity ----------------------------------------------------------
     # Auth, if ever wanted, lives in oauth2-proxy in front (see deploy/). The
     # app only ever trusts forwarded headers -- or a fake identity in dev.

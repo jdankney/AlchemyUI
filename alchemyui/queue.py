@@ -68,6 +68,9 @@ class Job:
     cold_start: bool = False
     progress_value: int = 0
     progress_max: int = 0
+    stage_index: int = 0          # which sampling pass of a multi-stage graph
+    stage_label: str = ""
+    overall: float = 0.0          # 0..1 across every stage, weighted
 
     error_text: str | None = None
     error_detail: str | None = None
@@ -94,7 +97,11 @@ class Job:
             "status": self.state.value,
             "position": position,
             "eta_s": round(eta_s, 1) if eta_s is not None else None,
-            "progress": {"value": self.progress_value, "max": self.progress_max},
+            "progress": {
+                "value": self.progress_value, "max": self.progress_max,
+                "overall": round(self.overall, 4),
+                "stage": self.stage_label, "stage_index": self.stage_index,
+            },
             "params": self.params,
             "cold_start": self.cold_start,
             "error_text": self.error_text,
@@ -227,11 +234,15 @@ class QueueManager:
         job = self._active
         if job is None:
             return 0.0
+        # Measured beats modelled: once a job is far enough in, extrapolate
+        # from its own elapsed time rather than from a per-step average that
+        # knows nothing about which stage is running.
+        if job.overall > 0.02 and job.sampling_started_at:
+            elapsed = now() - job.sampling_started_at
+            return max(0.0, elapsed / job.overall - elapsed)
         sps, _ = self._stats.get(job.workflow_id, [2.0, 30.0])
         if job.progress_max and job.progress_value:
             return max(0.0, (job.progress_max - job.progress_value) * sps)
-        if job.sampling_started_at:
-            return max(0.0, job.steps * sps - (now() - job.sampling_started_at))
         return self._job_estimate(job, self._resident_checkpoint)
 
     def _etas(self) -> dict[str, float]:
@@ -601,6 +612,9 @@ class QueueManager:
                     "job_id": job.id,
                     "value": job.progress_value,
                     "max": job.progress_max,
+                    "overall": round(job.overall, 4),
+                    "stage": job.stage_label,
+                    "stage_index": job.stage_index,
                     "eta_s": round(self._remaining_for_active(), 1),
                     "started_at": job.started_at,
                 })
@@ -629,27 +643,37 @@ class QueueManager:
             job._finished.set()
 
     def _apply_progress(self, job: Job, kind: str, d: dict) -> bool:
-        """Update a job's step counters. Returns True if anything changed.
+        """Update a job's progress. Returns True if anything changed.
 
         ComfyUI 0.30 sends `progress_state` -- a map of every active node's
         progress -- and no longer sends the flat `progress` message the spec
-        describes. We read the registry's declared sampler node out of that
+        describes. We read the workflow's declared sampling stages out of that
         map, and keep a legacy branch so an older ComfyUI still drives the bar.
         """
-        value = max_ = None
+        workflow = self.reg.get(job.workflow_id)
+        stages = workflow.stages if workflow else ()
+
         if kind == "progress":
             value, max_ = d.get("value"), d.get("max")
+            index = job.stage_index
         else:
             nodes = d.get("nodes") or {}
-            workflow = self.reg.get(job.workflow_id)
-            entry = nodes.get(workflow.progress_node) if workflow else None
-            if entry is None:
-                # No entry for the sampler yet (or a template whose real work
-                # happens elsewhere): follow whichever node has the most steps.
+            value = max_ = None
+            index = job.stage_index
+            # Prefer the latest stage that is reporting: a graph moves forward,
+            # and a node that already finished may still sit in the map.
+            for i, st in enumerate(stages):
+                entry = nodes.get(st.node)
+                if entry is not None and entry.get("max"):
+                    value, max_, index = entry.get("value"), entry.get("max"), i
+            if value is None:
+                # A stage that reports nothing (FaceDetailer does not always),
+                # or a template whose real work happens off the declared path:
+                # follow whichever node has the most steps.
                 candidates = [n for n in nodes.values() if (n.get("max") or 0) > 1]
-                entry = max(candidates, key=lambda n: n.get("max") or 0, default=None)
-            if entry is not None:
-                value, max_ = entry.get("value"), entry.get("max")
+                best = max(candidates, key=lambda n: n.get("max") or 0, default=None)
+                if best is not None:
+                    value, max_ = best.get("value"), best.get("max")
 
         if value is None or max_ is None:
             return False
@@ -657,21 +681,42 @@ class QueueManager:
 
         # ComfyUI reports a 0/1 marker for any node that is merely *running*
         # -- the checkpoint loader, the text encoders, and the sampler itself
-        # before it starts stepping. Only the sampler has real steps, so a max
-        # of 1 on a job asking for more than one step is a marker, not
-        # progress; showing it would flash "step 0 of 1" before the real bar.
+        # before it starts stepping. Only a sampler has real steps, so a max
+        # of 1 on a job asking for more than that is a marker, not progress.
         if max_ <= 1 and job.steps > 1:
             return False
 
-        if (value, max_) == (job.progress_value, job.progress_max):
+        overall = self._overall(stages, index, value, max_)
+        label = stages[index].label if index < len(stages) else ""
+        if (value, max_, index, round(overall, 4)) == (
+                job.progress_value, job.progress_max, job.stage_index, round(job.overall, 4)):
             return False
 
         job.progress_value, job.progress_max = value, max_
+        job.stage_index, job.stage_label = index, label
+        # Never let the bar go backwards when a new stage starts from step 1.
+        job.overall = max(job.overall, overall)
+
         if value >= 1 and job.sampling_started_at is None:
             # First real step: everything before this was checkpoint load and
             # text encode, which is exactly the split the EWMA wants.
             job.sampling_started_at = now()
         return True
+
+    @staticmethod
+    def _overall(stages, index: int, value: int, max_: int) -> float:
+        """Weighted completion across every stage.
+
+        Reaching stage N means every earlier stage is done, whether or not it
+        ever reported -- which is what keeps a silent stage from stalling the
+        bar at the previous stage's total.
+        """
+        if not stages:
+            return value / max_ if max_ else 0.0
+        total = sum(st.weight for st in stages)
+        done = sum(st.weight for st in stages[:index])
+        here = stages[index].weight * (value / max_ if max_ else 0.0)
+        return min(1.0, (done + here) / total)
 
     # -- persistence ----------------------------------------------------------
     async def _persist_job(self, job: Job) -> None:

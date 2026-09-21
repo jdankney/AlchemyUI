@@ -40,6 +40,8 @@ const h = (tag, attrs = {}, ...kids) => {
 // every platform; these don't.
 const ICONS = {
   sparkle: 'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z',
+  gem: 'M6 3h12l4 6-10 12L2 9l4-6zM2 9h20M12 21L8 9l4-6 4 6-4 12',
+  edit: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z',
   stop: 'M7 7h10v10H7z',
   x: 'M18 6L6 18M6 6l12 12',
   chevron: 'M6 9l6 6 6-6',
@@ -89,7 +91,10 @@ const S = {
     prompt: '', negative: null, aspect: null, seed: '', steps: null, cfg: null,
     sampler: null, scheduler: null,
     denoise: null, grow_mask: null, feathering: null,          // Phase 2
+    scale_by: null, refine: null, refine_steps: null,          // Phase 3
+    face_denoise: null, face_guide: null,
   },
+  hq: false,              // the quality chain, on the modes that offer it
   seedLocked: false,
   advancedOpen: false,
   optionsOpen: false,
@@ -107,8 +112,16 @@ const S = {
   pads: { left: 0, top: 0, right: 256, bottom: 0 },
 };
 
-const byKind = kind => S.workflows.find(w => w.kind === kind);
-const workflow = () => byKind(S.mode) || S.workflows.find(w => w.id === S.wf);
+// The base workflow for a mode is the one the picker names; the HQ toggle
+// swaps in its declared twin, which is a separate registry entry with its own
+// validated template rather than a flag on this one.
+const byKind = kind => S.workflows.find(w => w.kind === kind && !w.id.endsWith('-hq'));
+const baseWorkflow = () => byKind(S.mode) || S.workflows.find(w => w.id === S.wf);
+const hqTwin = w => w && w.hq_variant ? S.workflows.find(x => x.id === w.hq_variant) : null;
+const workflow = () => {
+  const base = baseWorkflow();
+  return (S.hq && hqTwin(base)) || base;
+};
 const activeJobs = () => S.jobs.filter(j => j.status === 'queued' || j.status === 'running');
 const failedJobs = () => S.jobs.filter(j => j.status === 'failed' && !j.dismissed);
 
@@ -149,7 +162,8 @@ function onQueue(d) {
 function onProgress(d) {
   const j = S.jobs.find(x => x.id === d.job_id);
   if (!j) return;
-  j.progress = { value: d.value, max: d.max };
+  j.progress = { value: d.value, max: d.max, overall: d.overall, stage: d.stage,
+                 stage_index: d.stage_index };
   j.eta_s = d.eta_s;
   j.started_at = d.started_at || j.started_at;
   renderJobCard(j.id);
@@ -235,6 +249,7 @@ const MODES = [
   ['img2img',  'Transform', 'image'],
   ['inpaint',  'Paint over', 'brush'],
   ['outpaint', 'Extend', 'expand'],
+  ['enhance',  'Enhance', 'gem'],
 ];
 
 function modeControl() {
@@ -251,6 +266,7 @@ function modeControl() {
 function setMode(kind) {
   if (S.mode === kind) return;
   S.mode = kind;
+  if (!hqTwin(byKind(kind))) S.hq = false;
   // The upload carries over between modes -- transforming an image and then
   // painting over the same one is the obvious next thing to want. The mask
   // does not: it was painted for a different job.
@@ -285,6 +301,7 @@ function composer() {
       h('div', { class: 'compose-tools' },
         w.aspects && Object.keys(w.aspects).length && w.inputs.includes('aspect')
           ? aspectControl(w, f.aspect || w.defaults.aspect || Object.keys(w.aspects)[0]) : null,
+        hqToggle(),
         h('div', { class: 'spacer' }),
         h('button', {
           type: 'submit', class: 'btn btn-primary',
@@ -326,6 +343,7 @@ function composer() {
                 w.limits.feathering || [0, 128], 1,
                 f.feathering ?? w.defaults.feathering, v => { S.form.feathering = v; },
                 v => v + ' px') : null,
+              w.inputs.includes('scale_by') ? chainFields(w) : null,
               h('div', { class: 'grid-2' },
                 selectField('sampler', 'Sampler', w.choices.sampler || [], f.sampler ?? w.defaults.sampler),
                 selectField('scheduler', 'Scheduler', w.choices.scheduler || [], f.scheduler ?? w.defaults.scheduler)),
@@ -336,13 +354,66 @@ function composer() {
   );
 }
 
-const promptPlaceholder = w =>
+function hqToggle() {
+  if (!hqTwin(baseWorkflow())) return null;
+  return h('button', {
+    type: 'button', class: 'btn btn-sm' + (S.hq ? ' is-on' : ''),
+    'aria-pressed': S.hq ? 'true' : 'false',
+    title: S.hq ? 'Upscale, refine and clean up faces — roughly three times the wait'
+                : 'Add the quality chain: upscale, refine detail, clean up faces',
+    onclick: () => { S.hq = !S.hq; render(); },
+  }, icon('gem', 'icon-sm'), 'High quality');
+}
+
+// The chain's own knobs, shared by the Enhance mode and the HQ toggle.
+function chainFields(w) {
+  const f = S.form;
+  return [
+    sliderField('scale_by', 'Upscale amount', w.limits.scale_by || [0.2, 0.6], 0.01,
+      f.scale_by ?? w.defaults.scale_by, v => { S.form.scale_by = v; renderChainNote(); },
+      v => (v * 4).toFixed(2) + '×'),
+    sliderField('refine', 'Refine strength — how much detail is re-drawn',
+      w.limits.refine || [0.15, 0.6], 0.01,
+      f.refine ?? w.defaults.refine, v => { S.form.refine = v; }, v => v.toFixed(2)),
+    sliderField('refine_steps', 'Refine steps', w.limits.refine_steps || [10, 40], 1,
+      f.refine_steps ?? w.defaults.refine_steps, v => { S.form.refine_steps = v; },
+      v => String(v)),
+    sliderField('face_denoise', 'Face detail strength', w.limits.face_denoise || [0.2, 0.6], 0.01,
+      f.face_denoise ?? w.defaults.face_denoise, v => { S.form.face_denoise = v; },
+      v => v.toFixed(2)),
+    sliderField('face_guide', 'Face detail size', w.limits.face_guide || [384, 768], 8,
+      f.face_guide ?? w.defaults.face_guide, v => { S.form.face_guide = v; }, v => v + ' px'),
+    h('div', { class: 'small faint', id: 'chain-note' }, chainNote(w)),
+  ];
+}
+
+// The chain upscales 4x then scales back, and the server lowers the scaling
+// further if the result would not fit. Saying so beats a surprise.
+function chainNote(w) {
+  const scale = S.form.scale_by ?? w.defaults.scale_by;
+  const src = S.upload ? [S.upload.width, S.upload.height]
+    : (w.aspects && w.aspects[S.form.aspect || w.defaults.aspect]) || null;
+  if (!src) return 'Output is upscaled 4× then scaled back down.';
+  const [sw, sh] = src;
+  const out = [Math.round(sw * 4 * scale), Math.round(sh * 4 * scale)];
+  const capped = Math.max(...out) > 1600;
+  return `Result about ${out[0]} × ${out[1]}` +
+    (capped ? ' — the server will scale this back to fit in VRAM.' : '.');
+}
+function renderChainNote() {
+  const el = document.getElementById('chain-note');
+  const w = workflow();
+  if (el && w) el.textContent = chainNote(w);
+}
+
+const promptPlaceholder = w =
   w.kind === 'inpaint' ? 'Describe what should appear in the painted area…'
   : w.kind === 'outpaint' ? 'Describe what continues beyond the edges…'
   : w.kind === 'img2img' ? 'Describe what the image should become…'
   : 'Describe the image you want…';
 const submitLabel = w =>
-  w.kind === 'inpaint' ? 'Repaint' : w.kind === 'outpaint' ? 'Extend'
+  w.kind === 'enhance' ? 'Enhance'
+  : w.kind === 'inpaint' ? 'Repaint' : w.kind === 'outpaint' ? 'Extend'
   : w.kind === 'img2img' ? 'Transform' : 'Generate';
 
 /* ------------------------------------------------------------ upload zone */
@@ -709,7 +780,12 @@ function hintKids() {
       cold ? `~${fmtDur(est)} (incl. ~${fmtDur(w.load_seconds)} cold start)` : `~${fmtDur(est)}`),
   ];
   if (ahead) kids.push(h('span', { class: 'sep' }, '·'), h('span', {}, `${plural(ahead, 'job')} ahead`));
-  if (w.blurb) kids.push(h('span', { class: 'sep' }, '·'), h('span', { class: 'faint' }, w.blurb));
+  if (w.inputs.includes('scale_by')) {
+    kids.push(h('span', { class: 'sep' }, '·'),
+      h('span', { style: 'color:var(--warn)' }, 'quality chain — about 3× the wait'));
+  } else if (w.blurb) {
+    kids.push(h('span', { class: 'sep' }, '·'), h('span', { class: 'faint' }, w.blurb));
+  }
   kids.push(h('span', { class: 'spacer' }), h('span', {}, h('kbd', {}, 'Ctrl'), ' ', h('kbd', {}, 'Enter'), ' to generate'));
   return kids;
 }
@@ -763,7 +839,10 @@ function jobCard(job) {
   if (job.status === 'failed') return failedCard(job);
   const p = job.progress || { value: 0, max: 0 };
   const stepping = p.max > 0;
-  const pct = stepping ? Math.round(100 * p.value / p.max) : 0;
+  // A multi-stage job reports overall progress across every pass, so the bar
+  // does not hit 100% a third of the way through a six-minute run.
+  const pct = stepping ? Math.round(100 * (p.overall != null && p.overall > 0
+    ? p.overall : p.value / p.max)) : 0;
 
   let state;
   if (job.status === 'queued') {
@@ -772,7 +851,7 @@ function jobCard(job) {
     state = job.position > 0 ? `Queued · ${job.position} ahead of you`
       : job.position === 0 ? 'Starting…' : 'Queued';
   } else if (stepping) {
-    state = `Step ${p.value} of ${p.max}`;
+    state = p.stage ? `${p.stage} · ${p.value}/${p.max}` : `Step ${p.value} of ${p.max}`;
   } else if (job.cold_start) {
     state = 'Loading the checkpoint…';
   } else {
@@ -852,6 +931,10 @@ function lightbox() {
         icon('down', 'icon-sm'), 'Download'),
       h('button', { class: 'btn', onclick: () => { reuse(p); close(); } }, icon('redo', 'icon-sm'), 'Reuse settings'),
       h('button', { class: 'btn', onclick: () => { reuse(p, true); close(); } }, icon('dice', 'icon-sm'), 'Vary seed'),
+      // An image can go straight back into the editors without a round trip
+      // through the filesystem -- the server copies it into ComfyUI's input/.
+      h('button', { class: 'btn', onclick: () => editImage(img, 'img2img') }, icon('edit', 'icon-sm'), 'Edit'),
+      h('button', { class: 'btn', onclick: () => editImage(img, 'enhance') }, icon('gem', 'icon-sm'), 'Enhance'),
       h('button', { class: 'btn btn-ghost btn-danger', onclick: () => delImage(img.id) }, icon('trash', 'icon-sm'), 'Delete'),
       h('button', { class: 'btn btn-ghost', onclick: close }, icon('x', 'icon-sm'), 'Close')),
     h('img', { src: img.url, alt: p.prompt || 'Generated image' }),
@@ -887,7 +970,14 @@ function reuse(params, newSeed = false) {
   // Jump to the mode this image came from, if it is still on offer -- but not
   // its source image or mask, which are a different job's inputs.
   const from = S.workflows.find(x => x.id === params.workflow_id);
-  if (from && byKind(from.kind)) S.mode = from.kind;
+  if (from) {
+    if (byKind(from.kind)) S.mode = from.kind;
+    // An image made with the chain comes back with the chain switched on.
+    S.hq = !!hqTwin(byKind(from.kind)) && from.id.endsWith('-hq');
+  }
+  for (const k of ['scale_by', 'refine', 'refine_steps', 'face_denoise', 'face_guide']) {
+    S.form[k] = params[k] ?? null;
+  }
   if (params.pad_left != null) {
     S.pads = { left: params.pad_left || 0, top: params.pad_top || 0,
                right: params.pad_right || 0, bottom: params.pad_bottom || 0 };
@@ -895,6 +985,25 @@ function reuse(params, newSeed = false) {
   render();
   document.querySelector('.app-body')?.scrollTo({ top: 0, behavior: 'smooth' });
   focusPrompt();
+}
+
+async function editImage(img, mode) {
+  if (!byKind(mode)) { toast(`No ${mode} workflow is configured.`, true); return; }
+  try {
+    const up = await api.post(`/api/images/${img.id}/reuse`);
+    S.upload = { ...up, hasMask: false };
+    S.mask.strokes = [];
+    S.mode = mode;
+    S.lightbox = null;
+    // Carry the prompt across: enhancing usually means "the same thing, but
+    // better", and the detail pass needs to know what it is looking at.
+    if (img.params?.prompt) S.form.prompt = img.params.prompt;
+    render();
+    document.querySelector('.app-body')?.scrollTo({ top: 0, behavior: 'smooth' });
+    focusPrompt();
+  } catch (e) {
+    toast(e.message, true);
+  }
 }
 
 /* ---------------------------------------------------------------- actions */
@@ -924,6 +1033,9 @@ async function submit(e) {
   if (w.kind === 'img2img') body.denoise = f.denoise ?? w.defaults.denoise;
   if (w.inputs.includes('grow_mask')) body.grow_mask = f.grow_mask ?? w.defaults.grow_mask;
   if (w.inputs.includes('feathering')) body.feathering = f.feathering ?? w.defaults.feathering;
+  for (const k of ['scale_by', 'refine', 'refine_steps', 'face_denoise', 'face_guide']) {
+    if (w.inputs.includes(k)) body[k] = f[k] ?? w.defaults[k];
+  }
   if (needsImage) body.image_id = S.upload.id;
   if (w.kind === 'outpaint') {
     Object.assign(body, {

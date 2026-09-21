@@ -43,18 +43,33 @@ class ParamBinding:
     field: str
 
 
+@dataclass(frozen=True)
+class Stage:
+    """One reporting pass in a graph that samples more than once.
+
+    The quality chain runs a base sampler, then a hi-res pass, then
+    FaceDetailer. ComfyUI reports progress per node, so following a single one
+    would leave the bar stuck at 100% for two thirds of a six-minute job.
+    `weight` is that stage's share of the wall clock -- rough is fine, it only
+    has to stop the bar from lying.
+    """
+    node: str
+    label: str
+    weight: float
+
+
 # How each known input is coerced. Keeping this in one table is what lets a
 # new capability be a registry entry rather than a change to resolve().
 _TEXT_INPUTS = frozenset({"prompt", "negative"})
 _INT_INPUTS = frozenset({"steps", "pad_left", "pad_top", "pad_right", "pad_bottom",
-                         "grow_mask", "feathering"})
-_FLOAT_INPUTS = frozenset({"cfg", "denoise"})
+                         "grow_mask", "feathering", "refine_steps", "face_guide"})
+_FLOAT_INPUTS = frozenset({"cfg", "denoise", "scale_by", "refine", "face_denoise"})
 # Filenames inside ComfyUI's input/ directory, set by the upload step rather
 # than by the person -- passed through untouched.
 _REF_INPUTS = frozenset({"image", "mask"})
 
 # What kind of editor the browser should put in front of the person.
-_KINDS = ("txt2img", "img2img", "inpaint", "outpaint")
+_KINDS = ("txt2img", "img2img", "inpaint", "outpaint", "enhance")
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,8 @@ class WorkflowInfo:
     aspects: dict[str, tuple[int, int]]
     progress_node: str
     output_node: str
+    stages: tuple[Stage, ...]
+    hq_variant: str | None
     est_seconds_per_step: float
     est_load_s: float
     template: dict = field(repr=False, default_factory=dict)
@@ -110,6 +127,12 @@ class WorkflowInfo:
         if seed is None or seed == "":
             seed = random.randint(0, MAX_SEED)
         p["seed"] = max(0, min(MAX_SEED, int(seed)))
+        # A multi-stage graph has more than one sampler. They all take the
+        # job's seed, so the whole run reproduces from one number rather than
+        # three -- which is what the gallery's "reuse settings" promises.
+        for extra in ("hq_seed", "face_seed"):
+            if extra in self.params:
+                p[extra] = p["seed"]
 
         for name in self.inputs:
             if name in ("prompt", "negative", "aspect", "seed"):
@@ -166,6 +189,8 @@ class WorkflowInfo:
             "checkpoint": self.checkpoint,
             "kind": self.kind,
             "requires": list(self.requires),
+            "hq_variant": self.hq_variant,
+            "stages": [s.label for s in self.stages] if len(self.stages) > 1 else [],
             "inputs": list(self.inputs),
             "defaults": dict(self.defaults),
             "limits": {k: list(v) for k, v in self.limits.items()},
@@ -293,6 +318,16 @@ def validate_entry(key: str, entry: dict, workflows_dir: Path) -> WorkflowInfo:
     if kind not in _KINDS:
         raise RegistryError(f"{key}: unknown kind {kind!r} (want one of {', '.join(_KINDS)})")
 
+    raw_stages = entry.get("stages") or [{"node": progress_node, "label": "", "weight": 1.0}]
+    stages = []
+    for st in raw_stages:
+        node_id = str(st["node"])
+        _require_node(template, node_id, key, f"stage {st.get('label', node_id)!r}")
+        weight = float(st.get("weight", 1.0))
+        if weight <= 0:
+            raise RegistryError(f"{key}: stage {node_id} has a non-positive weight")
+        stages.append(Stage(node_id, st.get("label", ""), weight))
+
     est = entry.get("est") or {}
     return WorkflowInfo(
         key=key,
@@ -310,6 +345,8 @@ def validate_entry(key: str, entry: dict, workflows_dir: Path) -> WorkflowInfo:
         aspects=aspects,
         progress_node=progress_node,
         output_node=output_node,
+        stages=tuple(stages),
+        hq_variant=entry.get("hq_variant"),
         est_seconds_per_step=float(est.get("seconds_per_step", 2.0)),
         est_load_s=float(est.get("load_s", 30.0)),
         template=template,
@@ -332,7 +369,17 @@ def load_registry(workflows_dir: str | Path) -> Registry:
     if not entries:
         raise RegistryError(f"{path} defines no workflows")
 
-    return Registry({k: validate_entry(k, v, workflows_dir) for k, v in entries.items()})
+    workflows = {k: validate_entry(k, v, workflows_dir) for k, v in entries.items()}
+    # Cross-entry, so it cannot live in validate_entry: a toggle that points at
+    # a workflow which isn't there would only fail when someone flicks it.
+    for key, w in workflows.items():
+        if w.hq_variant and w.hq_variant not in workflows:
+            raise RegistryError(
+                f"{key}: hq_variant {w.hq_variant!r} is not a workflow in this registry"
+            )
+        if w.hq_variant == key:
+            raise RegistryError(f"{key}: hq_variant points at itself")
+    return Registry(workflows)
 
 
 @lru_cache

@@ -41,9 +41,10 @@ def _attach_mask(client, upload_id, data=None):
 
 
 # --- the registry ------------------------------------------------------------
-def test_all_four_workflows_are_offered_with_their_kind(client):
+def test_every_workflow_is_offered_with_its_kind(client):
     ws = {w["id"]: w for w in client.get("/api/workflows").json()["workflows"]}
-    assert {w["kind"] for w in ws.values()} == {"txt2img", "img2img", "inpaint", "outpaint"}
+    assert {w["kind"] for w in ws.values()} == {
+        "txt2img", "img2img", "inpaint", "outpaint", "enhance"}
     assert ws["img2img-sdxl"]["requires"] == ["image"]
     assert ws["inpaint-sdxl"]["requires"] == ["image", "mask"]
     assert ws["outpaint-sdxl"]["requires"] == ["image"]
