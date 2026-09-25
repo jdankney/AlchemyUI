@@ -18,7 +18,7 @@ from alchemyui.config import Settings
 from alchemyui.db import Database
 from alchemyui.queue import Job, JobState, QueueManager
 from alchemyui.registry import load_registry
-from tests.conftest import FakeComfy
+from tests.conftest import FakeComfy, add_user
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOWS = REPO / "workflows"
@@ -497,5 +497,23 @@ async def test_one_checkpoint_means_plain_fifo(tmp_db_path, tmp_output_dir):
         order = [qm._pick_next() for _ in range(5)]
         assert [j.id for j in order] == [j.id for j in order]
         assert all(j.skips == 0 for j in order)
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancel_refuses_someone_elses_job(tmp_db_path, tmp_output_dir):
+    comfy = FakeComfy()
+    comfy.mode = "hang"
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    try:
+        alice = await add_user(qm.db, "alice")
+        bob = await add_user(qm.db, "bob")
+        w = qm.reg.require("txt2img-sdxl")
+        job = await qm.submit(w, w.resolve({"prompt": "x", "steps": 4}), user_id=alice)
+        assert await qm.cancel(job.id, user_id=bob) is False
+        assert await qm.cancel(job.id, user_id=alice) is True
+        row = await qm.db.fetch_one("SELECT user_id FROM jobs WHERE id = ?", (job.id,))
+        assert row["user_id"] == alice
     finally:
         await qm.stop()

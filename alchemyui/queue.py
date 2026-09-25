@@ -11,9 +11,9 @@ Live state is pushed to every subscriber over SSE. Durations are learned per
 workflow (EWMA over observed runs, seeded from the registry's `est` block), so
 the ETA is measured rather than invented.
 
-Checkpoint-swap-aware ordering (spec section 7) has one seam, _pick_next(), and
-no implementation: Phase 1 ships a single checkpoint, so reordering would be
-untested dead code. Phase 5's model picker is what makes it real.
+Across users the order is strictly FIFO. Checkpoint-swap-aware ordering
+(_pick_next) may only reorder a user's *own* consecutive jobs at the head of
+the queue: promoting a job past someone else's would be cutting in line.
 """
 
 from __future__ import annotations
@@ -57,6 +57,7 @@ def new_job_id() -> str:
 class Job:
     workflow_id: str
     params: dict
+    user_id: int | None = None     # owner; None only for v1 rows not yet claimed
     id: str = field(default_factory=new_job_id)
     state: JobState = JobState.QUEUED
 
@@ -250,6 +251,7 @@ class QueueManager:
             job = Job(
                 workflow_id=r["workflow_id"],
                 params=json.loads(r["params_json"]),
+                user_id=r["user_id"],
                 id=r["id"],
                 created_at=r["created_at"],
             )
@@ -358,19 +360,25 @@ class QueueManager:
         )
 
     # -- submission / cancellation --------------------------------------------
-    async def submit(self, workflow: WorkflowInfo, params: dict) -> Job:
-        job = Job(workflow_id=workflow.key, params=params)
+    async def submit(self, workflow: WorkflowInfo, params: dict,
+                     user_id: int | None = None) -> Job:
+        job = Job(workflow_id=workflow.key, params=params, user_id=user_id)
         self._by_id[job.id] = job
         self._pending.append(job)
         await self._persist_job(job)
         self._wake.set()
         await self._broadcast()
-        log.info("job %s queued (workflow=%s pos=%d)", job.id, job.workflow_id, len(self._pending))
+        log.info("job %s queued (workflow=%s user=%s pos=%d)",
+                 job.id, job.workflow_id, user_id, len(self._pending))
         return job
 
-    async def cancel(self, job_id: str) -> bool:
+    async def cancel(self, job_id: str, user_id: int | None = None) -> bool:
+        """Cancel a job. With `user_id`, only its owner may -- anyone else is
+        told it does not exist, which is also all they are allowed to learn."""
         job = self._by_id.get(job_id)
         if job is None or job.state in TERMINAL:
+            return False
+        if user_id is not None and job.user_id != user_id:
             return False
 
         if job is self._active:
@@ -390,6 +398,14 @@ class QueueManager:
             await self._emit({"type": "job", "job": job.public()})
             return True
         return False
+
+    async def cancel_user(self, user_id: int) -> int:
+        """Cancel everything a user has queued or running (a disabled account)."""
+        mine = [j for j in [self._active, *self._pending] if j and j.user_id == user_id]
+        n = 0
+        for job in mine:
+            n += await self.cancel(job.id)
+        return n
 
     # -- snapshot / SSE fan-out -----------------------------------------------
     def snapshot(self) -> dict:
@@ -462,19 +478,30 @@ class QueueManager:
         goes next regardless of what it costs. Strict FIFO is the fallback,
         not the exception -- with one checkpoint in play this does nothing at
         all, which is exactly what Phase 1 wanted.
+
+        v2: all of that happens only inside the contiguous run of jobs that
+        belong to the owner at the head. Across users the queue is strict
+        FIFO, and a skip counter can never pull someone's job out from behind
+        another user's either.
         """
-        # Anyone who has waited too long goes now, swap or no swap.
+        head = self._pending[0]
+        run: list[Job] = []
         for job in self._pending:
+            if job.user_id != head.user_id:
+                break
+            run.append(job)
+
+        # Anyone in this run who has waited too long goes now, swap or no swap.
+        for job in run:
             if job.skips >= self.cfg.queue_max_skips:
                 self._pending.remove(job)
                 return job
 
-        head = self._pending[0]
         resident = self._resident_checkpoint
         if resident is None or head.checkpoint == resident:
             return self._pending.pop(0)
 
-        window = self._pending[:max(1, self.cfg.queue_reorder_window)]
+        window = run[:max(1, self.cfg.queue_reorder_window)]
         for i, job in enumerate(window):
             if job.checkpoint == resident:
                 if i == 0:
@@ -482,7 +509,7 @@ class QueueManager:
                 for passed in window[:i]:
                     passed.skips += 1
                 self._pending.remove(job)
-                log.info("job %s promoted over %d job(s): %s is already resident",
+                log.info("job %s promoted over %d of its owner's job(s): %s is already resident",
                          job.id, i, job.checkpoint)
                 return job
         return self._pending.pop(0)
@@ -624,10 +651,10 @@ class QueueManager:
             width, height = png_size(data)
             ts = now()
             await self.db.execute(
-                "INSERT INTO images (id, job_id, filename, path, width, height, seed, "
+                "INSERT INTO images (id, user_id, job_id, filename, path, width, height, seed, "
                 "  workflow_id, params_json, favorite, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,0,?)",
-                (image_id, job.id, d.get("filename", ""), path, width, height,
+                "VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
+                (image_id, job.user_id, job.id, d.get("filename", ""), path, width, height,
                  job.params.get("seed"), job.workflow_id, params_json, ts),
             )
             row = {
@@ -806,15 +833,16 @@ class QueueManager:
     # -- persistence ----------------------------------------------------------
     async def _persist_job(self, job: Job) -> None:
         await self.db.execute(
-            "INSERT INTO jobs (id, workflow_id, status, prompt_id, queue_position, params_json, "
-            "  input_image_path, mask_path, error_text, error_detail, checkpoint, steps, "
-            "  created_at, started_at, finished_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "INSERT INTO jobs (id, workflow_id, user_id, status, prompt_id, queue_position, "
+            "  params_json, input_image_path, mask_path, error_text, error_detail, checkpoint, "
+            "  steps, created_at, started_at, finished_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "  status=excluded.status, queue_position=excluded.queue_position, "
             "  error_text=excluded.error_text, error_detail=excluded.error_detail, "
             "  started_at=excluded.started_at, finished_at=excluded.finished_at",
-            (job.id, job.workflow_id, job.state.value, job.id, self.position_of(job.id),
+            (job.id, job.workflow_id, job.user_id, job.state.value, job.id,
+             self.position_of(job.id),
              json.dumps(job.params), None, None, job.error_text, job.error_detail,
              job.checkpoint, job.steps, job.created_at, job.started_at, job.finished_at),
         )
