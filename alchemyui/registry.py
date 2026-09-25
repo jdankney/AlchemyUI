@@ -55,6 +55,7 @@ class CheckpointInfo:
     name: str
     label: str
     family: str
+    traits: tuple[str, ...] = ()
     blurb: str = ""
     aspects: dict[str, tuple[int, int]] = field(default_factory=dict)
     defaults: dict[str, Any] = field(default_factory=dict)
@@ -64,7 +65,7 @@ class CheckpointInfo:
     def public(self) -> dict:
         return {
             "name": self.name, "label": self.label, "family": self.family,
-            "blurb": self.blurb,
+            "traits": list(self.traits), "blurb": self.blurb,
             "aspects": {k: list(v) for k, v in self.aspects.items()},
             "defaults": dict(self.defaults),
         }
@@ -135,6 +136,10 @@ _LIST_INPUTS = frozenset({"references"})
 
 # What kind of editor the browser should put in front of the person.
 _KINDS = ("txt2img", "img2img", "inpaint", "outpaint", "enhance", "likeness")
+
+# What a checkpoint is good for. The model policy chooses on these, never on
+# a filename; a trait not in this set is a typo, and fails the boot.
+KNOWN_TRAITS = frozenset({"fast", "quality", "photoreal", "inpaint"})
 
 
 @dataclass(frozen=True)
@@ -331,7 +336,14 @@ class Registry:
         self._checkpoints = checkpoints or {}
 
     def checkpoint(self, name: str) -> CheckpointInfo | None:
-        return self._checkpoints.get(name)
+        hit = self._checkpoints.get(name)
+        if hit is None and name and "/" not in name:
+            # v1 named checkpoints by bare filename; the catalogue now names
+            # them by family folder, as ComfyUI lists them. Presets and
+            # gallery params saved by v1 still say the bare name.
+            hit = next((c for c in self._checkpoints.values()
+                        if c.name.rsplit("/", 1)[-1] == name), None)
+        return hit
 
     def checkpoints_for(self, workflow: WorkflowInfo) -> list[CheckpointInfo]:
         """Models this workflow can actually run.
@@ -573,10 +585,15 @@ def load_registry(workflows_dir: str | Path) -> Registry:
     for name, c in (data.get("checkpoints") or {}).items():
         family = c.get("family", "sdxl")
         est = c.get("est") or {}
+        traits = tuple(c.get("traits") or ())
+        unknown = set(traits) - KNOWN_TRAITS
+        if unknown:
+            raise RegistryError(f"checkpoint {name}: unknown trait(s) {sorted(unknown)}")
         checkpoints[name] = CheckpointInfo(
             name=name,
             label=c.get("label", name),
             family=family,
+            traits=traits,
             blurb=c.get("blurb", ""),
             aspects={k: (int(v[0]), int(v[1])) for k, v in (c.get("aspects") or {}).items()},
             defaults=dict(c.get("defaults") or {}),

@@ -18,8 +18,11 @@ from tests.conftest import wait_for as _wait
 # --- the model picker --------------------------------------------------------
 def test_checkpoints_are_offered_per_family(client):
     ws = {w["id"]: w for w in client.get("/api/workflows").json()["workflows"]}
-    plain = {c["name"] for c in ws["txt2img-sdxl"]["checkpoints"]}
-    assert len(plain) == 3                       # both SD1.5 models and SDXL
+    plain = ws["txt2img-sdxl"]["checkpoints"]
+    # every plain SD1.5 model and SDXL -- and never an inpainting UNet, whose
+    # nine-channel input cannot generate from an empty latent
+    assert {c["family"] for c in plain} == {"sd15", "sdxl"}
+    assert len(plain) == 5
     # The chain and FaceID are tuned for SDXL, so nothing else is offered
     assert {c["family"] for c in ws["likeness-sdxl"]["checkpoints"]} == {"sdxl"}
     assert {c["family"] for c in ws["enhance-sdxl"]["checkpoints"]} == {"sdxl"}
@@ -30,8 +33,8 @@ def test_resolution_and_sampling_follow_the_model():
     checkpoint rather than to the workflow."""
     reg = load_registry(REPO / "workflows")
     w = reg.require("txt2img-sdxl")
-    sdxl = reg.checkpoint("RealVisXL_V5.0_fp16.safetensors")
-    sd15 = reg.checkpoint("epicrealism_naturalSinRC1VAE.safetensors")
+    sdxl = reg.checkpoint("SDXL/RealVisXL_V5.0_fp16.safetensors")
+    sd15 = reg.checkpoint("SD1.5/epicrealism_naturalSinRC1VAE.safetensors")
 
     a = w.resolve({"prompt": "x", "aspect": "16:9"}, sdxl)
     b = w.resolve({"prompt": "x", "aspect": "16:9"}, sd15)
@@ -46,12 +49,12 @@ def test_resolution_and_sampling_follow_the_model():
 def test_picking_a_model_reaches_the_graph(client):
     r = client.post("/api/generate", json={
         "workflow_id": "txt2img-sdxl", "prompt": "x",
-        "checkpoint": "epicrealism_naturalSinRC1VAE.safetensors", "aspect": "1:1"})
+        "checkpoint": "SD1.5/epicrealism_naturalSinRC1VAE.safetensors", "aspect": "1:1"})
     assert r.status_code == 200
     assert r.json()["params"]["width"] == 512
     _wait(client, lambda: client.comfy.submitted)
     g = client.comfy.submitted[0][1]
-    assert g["4"]["inputs"]["ckpt_name"] == "epicrealism_naturalSinRC1VAE.safetensors"
+    assert g["4"]["inputs"]["ckpt_name"] == "SD1.5/epicrealism_naturalSinRC1VAE.safetensors"
     assert g["5"]["inputs"]["width"] == 512
 
 
@@ -59,7 +62,7 @@ def test_a_model_the_workflow_cannot_use_is_refused(client):
     """Better a clear refusal than a graph handed weights it was not built for."""
     r = client.post("/api/generate", json={
         "workflow_id": "likeness-sdxl", "prompt": "x", "reference_ids": [],
-        "checkpoint": "epicrealism_naturalSinRC1VAE.safetensors"})
+        "checkpoint": "SD1.5/epicrealism_naturalSinRC1VAE.safetensors"})
     assert r.status_code == 400
 
     r2 = client.post("/api/generate", json={
@@ -73,8 +76,8 @@ def test_timings_are_reported_per_model(client):
     wrong for each."""
     ws = {w["id"]: w for w in client.get("/api/workflows").json()["workflows"]}
     t = ws["txt2img-sdxl"]["timings"]
-    sdxl = t["RealVisXL_V5.0_fp16.safetensors"]
-    sd15 = t["epicrealism_naturalSinRC1VAE.safetensors"]
+    sdxl = t["SDXL/RealVisXL_V5.0_fp16.safetensors"]
+    sd15 = t["SD1.5/epicrealism_naturalSinRC1VAE.safetensors"]
     assert sd15["seconds_per_step"] < sdxl["seconds_per_step"]
     assert sd15["est_seconds"] < sdxl["est_seconds"]
 

@@ -13,9 +13,13 @@
     "the node classes and checkpoints actually exist."
   ],
   "checkpoints": {
-    "RealVisXL_V5.0_fp16.safetensors": {
+    "SDXL/RealVisXL_V5.0_fp16.safetensors": {
       "label": "RealVis XL",
       "family": "sdxl",
+      "traits": [
+        "quality",
+        "photoreal"
+      ],
       "blurb": "Photorealistic, 1024px native. Slower, best quality.",
       "aspects": {
         "1:1": [
@@ -48,9 +52,91 @@
         "load_s": 35
       }
     },
-    "epicrealism_naturalSinRC1VAE.safetensors": {
+    "SD1.5/realisticVisionV60B1_v51HyperVAE_pruned_fp16.safetensors": {
+      "label": "Realistic Vision Hyper",
+      "family": "sd15",
+      "traits": [
+        "fast",
+        "photoreal"
+      ],
+      "blurb": "Photorealistic SD1.5 in six steps. The fastest good model here.",
+      "aspects": {
+        "1:1": [
+          512,
+          512
+        ],
+        "3:4": [
+          576,
+          768
+        ],
+        "4:3": [
+          768,
+          576
+        ],
+        "9:16": [
+          512,
+          896
+        ],
+        "16:9": [
+          896,
+          512
+        ]
+      },
+      "defaults": {
+        "steps": 6,
+        "cfg": 1.5,
+        "sampler": "dpmpp_sde",
+        "scheduler": "karras"
+      },
+      "est": {
+        "seconds_per_step": 2.4,
+        "load_s": 15
+      }
+    },
+    "SD1.5/realisticVisionV60B1_v60B1VAE_pruned_fp16.safetensors": {
+      "label": "Realistic Vision 6.0",
+      "family": "sd15",
+      "traits": [
+        "photoreal"
+      ],
+      "blurb": "Photorealistic SD1.5, full step count.",
+      "aspects": {
+        "1:1": [
+          512,
+          512
+        ],
+        "3:4": [
+          576,
+          768
+        ],
+        "4:3": [
+          768,
+          576
+        ],
+        "9:16": [
+          512,
+          896
+        ],
+        "16:9": [
+          896,
+          512
+        ]
+      },
+      "defaults": {
+        "steps": 25,
+        "cfg": 5.0
+      },
+      "est": {
+        "seconds_per_step": 1.2,
+        "load_s": 15
+      }
+    },
+    "SD1.5/epicrealism_naturalSinRC1VAE.safetensors": {
       "label": "epiCRealism",
       "family": "sd15",
+      "traits": [
+        "photoreal"
+      ],
       "blurb": "Photorealistic SD1.5. About four times faster than SDXL.",
       "aspects": {
         "1:1": [
@@ -83,9 +169,10 @@
         "load_s": 15
       }
     },
-    "v1-5-pruned-emaonly.safetensors": {
+    "SD1.5/v1-5-pruned-emaonly.safetensors": {
       "label": "SD 1.5 base",
       "family": "sd15",
+      "traits": [],
       "blurb": "The stock SD1.5 weights. Mostly useful as a baseline.",
       "aspects": {
         "1:1": [
@@ -117,13 +204,93 @@
         "seconds_per_step": 1.1,
         "load_s": 15
       }
+    },
+    "SD1.5-Inpaint/realisticVisionV60B1_v60B1InpaintingVAE_pruned_fp16.safetensors": {
+      "label": "Realistic Vision 6.0 Inpainting",
+      "family": "sd15-inpaint",
+      "traits": [
+        "inpaint",
+        "photoreal"
+      ],
+      "blurb": "A dedicated inpainting UNet: repaints without a seam.",
+      "aspects": {
+        "1:1": [
+          512,
+          512
+        ],
+        "3:4": [
+          576,
+          768
+        ],
+        "4:3": [
+          768,
+          576
+        ],
+        "9:16": [
+          512,
+          896
+        ],
+        "16:9": [
+          896,
+          512
+        ]
+      },
+      "defaults": {
+        "steps": 25,
+        "cfg": 5.0
+      },
+      "est": {
+        "seconds_per_step": 1.2,
+        "load_s": 15
+      }
+    },
+    "SD1.5-Inpaint/realisticVisionV60B1_v51HyperInpaintVAE_pruned_fp16.safetensors": {
+      "label": "Realistic Vision Hyper Inpainting",
+      "family": "sd15-inpaint",
+      "traits": [
+        "inpaint",
+        "fast"
+      ],
+      "blurb": "The inpainting UNet in six steps.",
+      "aspects": {
+        "1:1": [
+          512,
+          512
+        ],
+        "3:4": [
+          576,
+          768
+        ],
+        "4:3": [
+          768,
+          576
+        ],
+        "9:16": [
+          512,
+          896
+        ],
+        "16:9": [
+          896,
+          512
+        ]
+      },
+      "defaults": {
+        "steps": 6,
+        "cfg": 1.5,
+        "sampler": "dpmpp_sde",
+        "scheduler": "karras"
+      },
+      "est": {
+        "seconds_per_step": 2.4,
+        "load_s": 15
+      }
     }
   },
   "workflows": {
     "txt2img-sdxl": {
       "display": "Generate (SDXL)",
       "template": "sdxl_txt2img.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
       "blurb": "Photorealistic, 1024px native.",
       "inputs": [
         "checkpoint",
@@ -204,7 +371,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",
@@ -254,7 +422,7 @@
       "display": "Transform an image",
       "kind": "img2img",
       "template": "sdxl_img2img.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
       "blurb": "Redraw an image you upload, keeping as much or as little as you like.",
       "requires": [
         "image"
@@ -343,7 +511,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",
@@ -369,7 +538,7 @@
       "display": "Paint over part of an image",
       "kind": "inpaint",
       "template": "sdxl_inpaint.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SD1.5-Inpaint/realisticVisionV60B1_v60B1InpaintingVAE_pruned_fp16.safetensors",
       "blurb": "Brush the area you want replaced, then describe what goes there.",
       "requires": [
         "image",
@@ -464,7 +633,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",
@@ -483,15 +653,16 @@
       },
       "_grow_mask_note": "ComfyUI's own default is 6, which leaves a visible ring around the mask on a 1000px-ish image: RealVisXL is not an inpainting checkpoint, so it refills the blanked region with a slightly different colour balance. 32 was measured to reduce that markedly. Higher values blend better but regenerate more of what you kept, which is why the slider goes to 64.",
       "families": [
-        "sdxl",
-        "sd15"
+        "sd15-inpaint",
+        "sd15",
+        "sdxl"
       ]
     },
     "outpaint-sdxl": {
       "display": "Extend an image",
       "kind": "outpaint",
       "template": "sdxl_outpaint.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SD1.5-Inpaint/realisticVisionV60B1_v60B1InpaintingVAE_pruned_fp16.safetensors",
       "blurb": "Grow the canvas outwards and let the model fill in the new space.",
       "requires": [
         "image"
@@ -620,7 +791,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",
@@ -638,15 +810,16 @@
         "load_s": 35
       },
       "families": [
-        "sdxl",
-        "sd15"
+        "sd15-inpaint",
+        "sd15",
+        "sdxl"
       ]
     },
     "enhance-sdxl": {
       "display": "Enhance",
       "kind": "enhance",
       "template": "sdxl_enhance.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
       "blurb": "Upscale, add detail, and clean up faces. Roughly triples the wait.",
       "requires": [
         "image"
@@ -769,7 +942,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",
@@ -807,7 +981,7 @@
       "display": "Generate (SDXL, high quality)",
       "kind": "txt2img",
       "template": "sdxl_txt2img_hq.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
       "blurb": "The full quality chain in one go. Roughly triples the wait.",
       "requires": [],
       "inputs": [
@@ -947,7 +1121,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",
@@ -1011,7 +1186,7 @@
       "display": "Likeness",
       "kind": "likeness",
       "template": "sdxl_faceid.v1.api.json",
-      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
       "blurb": "Generate someone from reference photos of their face.",
       "requires": [
         "references"
@@ -1178,7 +1353,8 @@
           "euler",
           "euler_ancestral",
           "ddim",
-          "uni_pc"
+          "uni_pc",
+          "dpmpp_sde"
         ],
         "scheduler": [
           "karras",

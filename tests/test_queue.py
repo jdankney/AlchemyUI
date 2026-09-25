@@ -316,7 +316,7 @@ async def test_resident_checkpoint_is_tracked_and_survives_restart(tmp_db_path, 
 
     qm2 = await _make_qm(tmp_db_path, tmp_output_dir, FakeComfy())
     try:
-        assert qm2._resident_checkpoint == "RealVisXL_V5.0_fp16.safetensors"
+        assert qm2._resident_checkpoint == "SDXL/RealVisXL_V5.0_fp16.safetensors"
         warm = await _submit(qm2)
         await asyncio.wait_for(warm._done.wait(), 10)
         assert warm.cold_start is False                     # no swap to pay for

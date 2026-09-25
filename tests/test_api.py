@@ -79,7 +79,7 @@ def test_submitted_graph_carries_the_injected_parameters(client):
     assert graph["6"]["inputs"]["text"] == "a red bicycle"
     assert graph["3"]["inputs"]["seed"] == 7
     assert (graph["5"]["inputs"]["width"], graph["5"]["inputs"]["height"]) == (896, 1152)
-    assert graph["4"]["inputs"]["ckpt_name"] == "RealVisXL_V5.0_fp16.safetensors"
+    assert graph["4"]["inputs"]["ckpt_name"] == "SDXL/RealVisXL_V5.0_fp16.safetensors"
     # we mint the prompt_id, and it matches the job the caller was handed
     assert prompt_id == client.get("/api/jobs").json()["jobs"][0]["id"]
 
