@@ -461,7 +461,7 @@ async def generate(req: GenerateRequest,
             for extra in ("hq_seed", "face_seed"):
                 if extra in p:
                     p[extra] = p["seed"]
-        job = await qm.submit(workflow, p)
+        job = await qm.submit(workflow, p, principal.user_id)
         if upload is not None:
             await db.execute(
                 "UPDATE jobs SET input_image_path = ?, mask_path = ? WHERE id = ?",
@@ -759,7 +759,7 @@ async def events(request: Request,
     reconnect backoff. Anything missed while disconnected is recovered from
     /api/jobs and /api/images.
     """
-    q = qm.subscribe()
+    q = qm.subscribe(principal.user_id)
 
     async def stream():
         try:
@@ -782,7 +782,7 @@ async def events(request: Request,
 @app.get("/api/queue")
 async def queue_now(principal: Principal = Depends(get_principal),
                     qm: QueueManager = Depends(get_queue)):
-    return qm.snapshot()
+    return qm.snapshot(principal.user_id)
 
 
 # --------------------------------------------------------------------------- #

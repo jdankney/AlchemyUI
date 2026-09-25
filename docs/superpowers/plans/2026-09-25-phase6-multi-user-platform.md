@@ -948,7 +948,7 @@ For example:
             await self._emit({"type": "job", "job": job.public(0)}, owner=job.user_id)
 ```
 
-- [ ] **Step 5: Routes.** In `alchemyui/app.py`: `/api/events` → `q = qm.subscribe(principal.user_id)`; `/api/queue` → `return qm.snapshot(principal.user_id)`.
+- [ ] **Step 5: Routes.** In `alchemyui/app.py`: `/api/events` → `q = qm.subscribe(principal.user_id)`; `/api/queue` → `return qm.snapshot(principal.user_id)`. **And** `generate` → `job = await qm.submit(workflow, p, principal.user_id)` — without it, jobs are created ownerless and their own owner's scoped stream hides them (three v1 SSE tests catch this).
 
 - [ ] **Step 6: Run the tests.** `uv run pytest -q` → all pass (the v1 SSE tests still pass: the dev user owns their own jobs).
 
@@ -1099,7 +1099,7 @@ def test_presets_are_per_user(client):
 
 5. `save_preset`: `existing = ... WHERE user_id = ? AND name = ?`, and the INSERT gains `user_id`. Replace "there is one user" in its comment with "and presets are per user".
 
-6. `generate`: `job = await qm.submit(workflow, p, principal.user_id)`.
+6. `generate`: already passes `principal.user_id` to `qm.submit` (moved into Task 4).
 
 7. `cancel_job`: `if not await qm.cancel(job_id, principal.user_id):`.
 

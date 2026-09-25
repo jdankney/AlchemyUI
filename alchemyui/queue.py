@@ -44,6 +44,18 @@ class JobState(enum.StrEnum):
 
 TERMINAL = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
 
+
+class _Everyone:
+    """Viewer sentinel: sees every job. Used internally and by tests; no
+    browser ever subscribes as it -- the admin page polls /api/admin/live."""
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "EVERYONE"
+
+
+EVERYONE = _Everyone()
+
 _RESIDENT_KEY = "resident_checkpoint"
 
 
@@ -133,7 +145,7 @@ class QueueManager:
         self._active: Job | None = None
         self._by_id: dict[str, Job] = {}
         self._wake = asyncio.Event()
-        self._subscribers: set[asyncio.Queue] = set()
+        self._subscribers: dict[asyncio.Queue, object] = {}   # queue -> viewer
 
         # workflow_id -> [seconds_per_step, load_seconds]
         self._stats: dict[str, list[float]] = {}
@@ -395,7 +407,7 @@ class QueueManager:
             await self._persist_job(job)
             job._done.set()
             await self._broadcast()
-            await self._emit({"type": "job", "job": job.public()})
+            await self._emit({"type": "job", "job": job.public()}, owner=job.user_id)
             return True
         return False
 
@@ -408,15 +420,24 @@ class QueueManager:
         return n
 
     # -- snapshot / SSE fan-out -----------------------------------------------
-    def snapshot(self) -> dict:
+    @staticmethod
+    def _visible(job: Job, viewer: object) -> bool:
+        return viewer is EVERYONE or job.user_id == viewer
+
+    def snapshot(self, viewer: object = EVERYONE) -> dict:
+        """The queue as one viewer may see it: their own jobs in full, with
+        positions counted across everyone ("2 ahead of you" stays true), and
+        nothing at all about anyone else's beyond the depth."""
         etas = self._etas()
         jobs = []
         ahead = 0
         if self._active is not None:
-            jobs.append(self._active.public(0, etas.get(self._active.id)))
+            if self._visible(self._active, viewer):
+                jobs.append(self._active.public(0, etas.get(self._active.id)))
             ahead = 1
         for i, j in enumerate(self._pending):
-            jobs.append(j.public(i + ahead, etas.get(j.id)))
+            if self._visible(j, viewer):
+                jobs.append(j.public(i + ahead, etas.get(j.id)))
         return {
             "type": "queue",
             "jobs": jobs,
@@ -442,26 +463,35 @@ class QueueManager:
                 return i + ahead
         return None
 
-    def subscribe(self) -> asyncio.Queue:
+    def subscribe(self, viewer: object = EVERYONE) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=256)
-        self._subscribers.add(q)
-        q.put_nowait(self.snapshot())
+        self._subscribers[q] = viewer
+        q.put_nowait(self.snapshot(viewer))
         return q
 
     def unsubscribe(self, q: asyncio.Queue) -> None:
-        self._subscribers.discard(q)
+        self._subscribers.pop(q, None)
 
-    async def _emit(self, event: dict) -> None:
-        for q in list(self._subscribers):
-            try:
-                q.put_nowait(event)
-            except asyncio.QueueFull:
-                # A subscriber this far behind is a dead connection; the
-                # browser will reconnect and recover state from /api/jobs.
-                self._subscribers.discard(q)
+    def _put(self, q: asyncio.Queue, event: dict) -> None:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            # A subscriber this far behind is a dead connection; the
+            # browser will reconnect and recover state from /api/jobs.
+            self._subscribers.pop(q, None)
+
+    async def _emit(self, event: dict, owner: object = EVERYONE) -> None:
+        """Send to everyone entitled to it: a job's events go to its owner only."""
+        for q, viewer in list(self._subscribers.items()):
+            if owner is EVERYONE or viewer is EVERYONE or viewer == owner:
+                self._put(q, event)
 
     async def _broadcast(self) -> None:
-        await self._emit(self.snapshot())
+        snaps: dict[object, dict] = {}
+        for q, viewer in list(self._subscribers.items()):
+            if viewer not in snaps:
+                snaps[viewer] = self.snapshot(viewer)
+            self._put(q, snaps[viewer])
 
     # -- worker ---------------------------------------------------------------
     def _pick_next(self) -> Job:
@@ -528,7 +558,7 @@ class QueueManager:
             job.cold_start = job.checkpoint != self._resident_checkpoint
             await self._persist_job(job)
             await self._broadcast()
-            await self._emit({"type": "job", "job": job.public(0)})
+            await self._emit({"type": "job", "job": job.public(0)}, owner=job.user_id)
 
             shutting_down = False
             try:
@@ -560,7 +590,7 @@ class QueueManager:
                     await self._persist_job(job)
                     job.preview = None          # the real image supersedes it
                     job._done.set()
-                    await self._emit({"type": "job", "job": job.public()})
+                    await self._emit({"type": "job", "job": job.public()}, owner=job.user_id)
                     await self._broadcast()
 
     async def _run(self, job: Job) -> None:
@@ -664,7 +694,7 @@ class QueueManager:
                 "url": f"/api/images/{image_id}/file",
             }
             job.images.append(row)
-            await self._emit({"type": "image", "image": row})
+            await self._emit({"type": "image", "image": row}, owner=job.user_id)
         return True
 
     # -- ComfyUI WebSocket relay ----------------------------------------------
@@ -701,7 +731,7 @@ class QueueManager:
                 # The frame itself is fetched over HTTP; SSE only says a newer
                 # one exists, so a 50KB image never rides the event stream.
                 await self._emit({"type": "preview", "job_id": job.id,
-                                  "seq": job.preview_seq})
+                                  "seq": job.preview_seq}, owner=job.user_id)
             return
         if t == "status":
             info = ((d.get("status") or {}).get("exec_info") or {})
@@ -729,7 +759,7 @@ class QueueManager:
                     "stage_index": job.stage_index,
                     "eta_s": round(self._remaining_for_active(), 1),
                     "started_at": job.started_at,
-                })
+                }, owner=job.user_id)
 
         elif t == "executing":
             # node == null means this prompt is finished.

@@ -517,3 +517,31 @@ async def test_cancel_refuses_someone_elses_job(tmp_db_path, tmp_output_dir):
         assert row["user_id"] == alice
     finally:
         await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_events_reach_only_the_jobs_owner(tmp_db_path, tmp_output_dir):
+    comfy = FakeComfy()
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    try:
+        alice, bob = await add_user(qm.db, "alice"), await add_user(qm.db, "bob")
+        qa, qb = qm.subscribe(alice), qm.subscribe(bob)
+        w = qm.reg.require("txt2img-sdxl")
+        job = await qm.submit(w, w.resolve({"prompt": "a secret fox", "steps": 4}),
+                              user_id=alice)
+        await asyncio.wait_for(job._done.wait(), 10)
+
+        def drain(q):
+            out = []
+            while not q.empty():
+                out.append(q.get_nowait())
+            return out
+
+        ea, eb = drain(qa), drain(qb)
+        assert any(e["type"] == "image" for e in ea)
+        assert not [e for e in eb if e["type"] in ("image", "progress", "job", "preview")]
+        # bob still learns the GPU is busy -- just nothing about what's on it
+        assert any(e["type"] == "queue" and e["depth"] == 1 for e in eb)
+        assert "a secret fox" not in json.dumps(eb)
+    finally:
+        await qm.stop()

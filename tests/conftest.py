@@ -211,7 +211,7 @@ def client(tmp_db_path, tmp_output_dir, monkeypatch, request):
 
 
 @pytest.fixture
-def live_server(tmp_db_path, tmp_output_dir, monkeypatch):
+def live_server(tmp_db_path, tmp_output_dir, monkeypatch, request):
     """The same app behind a real socket.
 
     TestClient cannot be used for /api/events: httpx's ASGI transport buffers
@@ -219,7 +219,9 @@ def live_server(tmp_db_path, tmp_output_dir, monkeypatch):
     completes. The event stream is the spine of this app, so it gets tested
     over a real connection rather than not at all. Still no GPU and no ComfyUI.
     """
-    db, comfy = _wire(monkeypatch, tmp_db_path, tmp_output_dir, {})
+    marker = request.node.get_closest_marker("env")
+    db, comfy = _wire(monkeypatch, tmp_db_path, tmp_output_dir,
+                      marker.kwargs if marker else {})
 
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
