@@ -1,13 +1,26 @@
 -- AlchemyUI schema. SQLite, WAL mode. Applied idempotently at startup.
 -- All timestamps are REAL Unix seconds, UTC.
 --
--- Single user by design: there is no users table and no per-user column
--- anywhere. Nothing here is billed or metered -- the timing fields exist so
--- the queue can give an honest ETA, not so anyone can be charged for them.
+-- v2: multi-user. Every owned row carries user_id; users are keyed on the
+-- OIDC sub. The metering columns on jobs are for visibility, never billing:
+-- nothing is ever charged for or blocked on them.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA busy_timeout = 5000;
+
+-- Accounts. Created on first sight of oauth2-proxy's headers and keyed on the
+-- OIDC `sub`: emails can change, `sub` cannot. Lifted from Llamacracy.
+CREATE TABLE IF NOT EXISTS users (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    oidc_sub        TEXT NOT NULL UNIQUE,
+    email           TEXT NOT NULL,
+    display_name    TEXT NOT NULL DEFAULT '',
+    is_admin        INTEGER NOT NULL DEFAULT 0,   -- cached from ADMIN_EMAILS; auth still checks config
+    disabled        INTEGER NOT NULL DEFAULT 0,
+    created_at      REAL NOT NULL,
+    last_active_at  REAL
+);
 
 CREATE TABLE IF NOT EXISTS jobs (
     id                TEXT PRIMARY KEY,       -- uuid4, canonical hyphenated: also the ComfyUI prompt_id
@@ -22,6 +35,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_detail      TEXT,                   -- verbatim ComfyUI node_errors / execution_error payload
     checkpoint        TEXT,                   -- resolved at submit; drives the swap-cost estimate
     steps             INTEGER,                -- denormalised from params for the ETA maths
+    user_id           INTEGER REFERENCES users(id),   -- NULL only for v1 rows not yet claimed
+    picked_at         REAL,                   -- worker took the job: GPU occupancy starts
+    occupancy_seconds REAL,                   -- picked_at -> finished_at; the metering basis
+    gpu_watts_mean    REAL,                   -- measured nvidia-smi mean while it held the GPU
+    energy_wh         REAL,                   -- (gpu + NON_GPU_LOAD_WATTS) x occupancy
+    rate_used         REAL,                   -- $/kWh in effect when it ran; frozen
+    cost_usd          REAL,                   -- frozen at finalisation, never recomputed
     created_at        REAL NOT NULL,
     started_at        REAL,
     finished_at       REAL
@@ -34,6 +54,7 @@ CREATE INDEX IF NOT EXISTS ix_jobs_created ON jobs(created_at DESC);
 -- a reproducibility trail possible. Cheap now, expensive to retrofit.
 CREATE TABLE IF NOT EXISTS images (
     id           TEXT PRIMARY KEY,           -- uuid hex, also the on-disk filename stem
+    user_id      INTEGER REFERENCES users(id),
     job_id       TEXT NOT NULL REFERENCES jobs(id),
     filename     TEXT NOT NULL,              -- ComfyUI's own filename, for provenance
     path         TEXT NOT NULL,              -- app-owned copy under OUTPUT_DIR
@@ -56,6 +77,7 @@ CREATE INDEX IF NOT EXISTS ix_images_job ON images(job_id);
 -- string a LoadImage node takes, and the only reason we keep it.
 CREATE TABLE IF NOT EXISTS uploads (
     id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk stem
+    user_id      INTEGER REFERENCES users(id),
     path         TEXT NOT NULL,          -- our normalised copy
     comfy_name   TEXT NOT NULL,          -- filename inside ComfyUI's input/
     width        INTEGER NOT NULL,
@@ -72,6 +94,7 @@ CREATE INDEX IF NOT EXISTS ix_uploads_created ON uploads(created_at DESC);
 -- arrival, and they are reused across jobs rather than belonging to one.
 CREATE TABLE IF NOT EXISTS refs (
     id           TEXT PRIMARY KEY,       -- uuid hex, also the on-disk stem
+    user_id      INTEGER REFERENCES users(id),
     path         TEXT NOT NULL,          -- our normalised square copy
     comfy_name   TEXT NOT NULL,          -- filename inside ComfyUI's input/
     label        TEXT NOT NULL DEFAULT '',
@@ -88,11 +111,13 @@ CREATE INDEX IF NOT EXISTS ix_refs_created ON refs(created_at DESC);
 -- composer had, so loading one restores the whole setup rather than a prompt.
 CREATE TABLE IF NOT EXISTS presets (
     id           TEXT PRIMARY KEY,
-    name         TEXT NOT NULL UNIQUE,
+    user_id      INTEGER REFERENCES users(id),
+    name         TEXT NOT NULL,
     workflow_id  TEXT NOT NULL,
     params_json  TEXT NOT NULL,
     created_at   REAL NOT NULL,
-    updated_at   REAL NOT NULL
+    updated_at   REAL NOT NULL,
+    UNIQUE (user_id, name)                  -- two friends may both have a "portrait"
 );
 
 -- Learned per-workflow durations: EWMA over observed runs, seeded from the

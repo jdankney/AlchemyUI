@@ -23,7 +23,49 @@ _SCHEMA = (Path(__file__).parent / "schema.sql").read_text()
 # existing ones. "duplicate column name" means it's already applied.
 _MIGRATIONS: list[str] = [
     "ALTER TABLE images ADD COLUMN tags TEXT NOT NULL DEFAULT ''",
+    # v2 / Phase 6: ownership, and metering on the job row
+    "ALTER TABLE jobs ADD COLUMN user_id INTEGER REFERENCES users(id)",
+    "ALTER TABLE jobs ADD COLUMN picked_at REAL",
+    "ALTER TABLE jobs ADD COLUMN occupancy_seconds REAL",
+    "ALTER TABLE jobs ADD COLUMN gpu_watts_mean REAL",
+    "ALTER TABLE jobs ADD COLUMN energy_wh REAL",
+    "ALTER TABLE jobs ADD COLUMN rate_used REAL",
+    "ALTER TABLE jobs ADD COLUMN cost_usd REAL",
+    "ALTER TABLE images ADD COLUMN user_id INTEGER REFERENCES users(id)",
+    "ALTER TABLE uploads ADD COLUMN user_id INTEGER REFERENCES users(id)",
+    "ALTER TABLE refs ADD COLUMN user_id INTEGER REFERENCES users(id)",
 ]
+
+# Indexes on migrated columns run AFTER the ALTERs: schema.sql is applied
+# first, and an index on a column an old DB does not have yet would abort
+# startup before the migration that adds it ever ran.
+_INDEXES: list[str] = [
+    "CREATE INDEX IF NOT EXISTS ix_jobs_user_finished ON jobs(user_id, finished_at)",
+    "CREATE INDEX IF NOT EXISTS ix_images_user_created ON images(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_uploads_user ON uploads(user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_refs_user ON refs(user_id, created_at DESC)",
+]
+
+
+def _rebuild_presets(conn: sqlite3.Connection) -> None:
+    """v1's presets had a globally UNIQUE name. SQLite cannot drop a constraint
+    in place, so an old table is rebuilt once, rows and ids intact."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(presets)")}
+    if "user_id" in cols:
+        return
+    conn.executescript("""
+        BEGIN;
+        CREATE TABLE presets_v2 (
+            id TEXT PRIMARY KEY, user_id INTEGER REFERENCES users(id),
+            name TEXT NOT NULL, workflow_id TEXT NOT NULL, params_json TEXT NOT NULL,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            UNIQUE (user_id, name));
+        INSERT INTO presets_v2 (id, user_id, name, workflow_id, params_json, created_at, updated_at)
+            SELECT id, NULL, name, workflow_id, params_json, created_at, updated_at FROM presets;
+        DROP TABLE presets;
+        ALTER TABLE presets_v2 RENAME TO presets;
+        COMMIT;
+    """)
 
 
 class Database:
@@ -39,6 +81,9 @@ class Database:
             except sqlite3.OperationalError as e:
                 if "duplicate column name" not in str(e):
                     raise
+        _rebuild_presets(self._conn)
+        for stmt in _INDEXES:
+            self._conn.execute(stmt)
         self._lock = asyncio.Lock()
 
     def close(self) -> None:
