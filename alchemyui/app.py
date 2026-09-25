@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,11 +25,12 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from . import admin as admin_api
 from .comfy import ComfyClient, get_comfy
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .faces import FaceRejected, get_analyser, normalise_reference
-from .identity import Principal, get_principal
+from .identity import Principal, get_principal, require_admin
 from .queue import QueueManager, get_queue, start_queue, stop_queue
 from .registry import MAX_SEED, Registry, get_registry
 from .storage import UploadRejected, normalise_mask, normalise_upload, save_upload
@@ -65,6 +67,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AlchemyUI", lifespan=lifespan)
+app.include_router(admin_api.router)
 
 
 def _sse(obj: dict) -> str:
@@ -83,6 +86,24 @@ async def healthz(comfy: ComfyClient = Depends(get_comfy)):
 async def me(principal: Principal = Depends(get_principal)):
     return {"email": principal.email, "display_name": principal.display_name,
             "is_admin": principal.is_admin}
+
+
+@app.get("/api/me/usage")
+async def my_usage(principal: Principal = Depends(get_principal),
+                   db: Database = Depends(get_db)):
+    """This calendar month, local time -- the same numbers the admin sees,
+    scoped to yourself."""
+    lt = time.localtime()
+    since = time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+    j = await db.fetch_one(
+        "SELECT COUNT(*) AS jobs, COALESCE(SUM(energy_wh), 0) AS wh, "
+        "  COALESCE(SUM(cost_usd), 0) AS cost FROM jobs "
+        "WHERE user_id = ? AND energy_wh IS NOT NULL AND finished_at >= ?",
+        (principal.user_id, since))
+    i = await db.fetch_one("SELECT COUNT(*) AS n FROM images WHERE user_id = ? AND created_at >= ?",
+                           (principal.user_id, since))
+    return {"since": since, "images": i["n"], "jobs": j["jobs"],
+            "kwh": j["wh"] / 1000, "cost_usd": j["cost"]}
 
 
 @app.get("/api/workflows")
@@ -809,6 +830,10 @@ async def queue_now(principal: Principal = Depends(get_principal),
 if STATIC_DIR.exists():
     app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets", check_dir=False),
               name="assets")
+
+    @app.get("/admin")
+    async def admin_page(principal: Principal = Depends(require_admin)):
+        return FileResponse(STATIC_DIR / "admin.html")
 
     @app.get("/")
     async def index():

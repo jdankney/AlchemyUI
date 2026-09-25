@@ -141,6 +141,16 @@ class Job:
             "finished_at": self.finished_at,
         }
 
+    def meta(self, position: int | None, eta_s: float | None, owner: str) -> dict:
+        """What the admin page may see: no prompt, no params, no images."""
+        return {
+            "id": self.id, "owner": owner, "workflow_id": self.workflow_id,
+            "checkpoint": self.checkpoint, "status": self.state.value,
+            "position": position, "eta_s": round(eta_s, 1) if eta_s is not None else None,
+            "overall": round(self.overall, 4), "picked_at": self.picked_at,
+            "started_at": self.started_at,
+        }
+
 
 class QueueManager:
     def __init__(self, db: Database, comfy: ComfyClient, registry: Registry, settings: Settings,
@@ -457,6 +467,17 @@ class QueueManager:
             "comfy_connected": self._comfy_connected,
             "ts": now(),
         }
+
+    def admin_view(self, names: dict[int, str]) -> dict:
+        etas = self._etas()
+        rows, ahead = [], 0
+        if self._active is not None:
+            a = self._active
+            rows.append(a.meta(0, etas.get(a.id), names.get(a.user_id, "unclaimed")))
+            ahead = 1
+        for i, j in enumerate(self._pending):
+            rows.append(j.meta(i + ahead, etas.get(j.id), names.get(j.user_id, "unclaimed")))
+        return {"jobs": rows, "depth": len(rows)}
 
     def position_of(self, job_id: str) -> int | None:
         """How many jobs are ahead of this one. 0 means it is running, or is
