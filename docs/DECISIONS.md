@@ -5,9 +5,133 @@ reasoning, so you can tell which ones to keep when you adapt it.
 [ALCHEMYUI_SPEC.md](../ALCHEMYUI_SPEC.md) is the brief these were made against;
 where a decision departs from it, that is said explicitly and why.
 
+The first section records the **v2 redesign**. Everything after it was decided
+while building v1, Phases 1–5, against the v1 brief
+(`git show f3c4a63:ALCHEMYUI_SPEC.md`). Where v2 overturns a v1 decision, the
+v1 entry says so rather than being deleted: the reasoning is still the record
+of why it was right at the time.
+
 Llamacracy is the sibling project these conventions come from. "Lifted from
 Llamacracy" below means the code is deliberately near-identical, so that
 knowing one codebase means knowing both.
+
+## v2 — the redesign
+
+Decided 2026-09-25, before any v2 code. The spec's §6–§12 hold the detail;
+these are the reasons.
+
+### Shape
+
+- **Multi-user, like Llamacracy, but tracking rather than limiting.** A few
+  friends share one GPU. What was wanted from Llamacracy's metering is
+  *visibility*: what each person's generations cost in electricity, and the GPU
+  live from anywhere. So v2 lifts the power sampler, the cost formula and the
+  admin page, and leaves out credits, sessions, caps and invoices. Nothing ever
+  blocks a job for cost.
+- **One prompt box instead of six modes.** v1 exposed its workflows directly,
+  which made the UI a control panel. The workflows were right; making users
+  choose among them was not. v2 keeps every one and lets a planner choose.
+
+### The planner
+
+- **The LLM writes a plan, never a graph.** It fills in a small, closed,
+  schema-checked vocabulary: `generate`, `transform`, `edit_region`, and so on.
+  The registry turns that into a graph and validates it exactly as v1 did. A
+  hallucinating model can only choose among options that exist. Letting an LLM
+  emit ComfyUI graphs would hand arbitrary node execution to whatever it
+  guessed.
+- **The LLM picks meaning; code picks numbers.** Plans say
+  `strength: "subtle"` and `quality: "fast"`, never `denoise: 0.45` or a
+  checkpoint filename. The registry and `policy.py` map words to tuned values.
+  Those values were measured on this card over five phases, and a model would
+  choose them worse. It also means `policy.py` can prefer the checkpoint that
+  is already loaded on `fast`, which a model could not know about.
+- **The vocabulary is generated from the registry at boot.** An action is
+  offered only when a validated workflow backs it. Until region editing
+  exists, "add me to my bed" cannot be misrouted to something that half-works;
+  it gets an honest question instead. Adding a capability is still just a
+  registry entry.
+- **Constrained decoding, then one repair retry.** `response_format:
+  json_schema` becomes a llama.cpp grammar, so a well-behaved server can't
+  return invalid JSON. The retry, which feeds the validation error back, covers
+  a plan that parses but names something that doesn't resolve.
+- **Earlier outputs reach the router as text, not pixels.** It sees what each
+  previous turn asked for and the prompt behind each image. That is enough to
+  resolve "make it darker" or "the second one", at a fraction of the cost of
+  re-sending every image to a vision model.
+
+### Where the planner runs
+
+- **Llamacracy first, a local CPU model as fallback.** The laptop's 6GB card
+  cannot hold an LLM and an SD checkpoint together; an LLM on it would evict
+  the checkpoint on every message and cost a 30s+ reload. Llamacracy already
+  serves vision-capable models on another GPU, behind an OpenAI-compatible
+  `/v1` that passes `response_format` and images through untouched. So the
+  router needs nothing new on that side, just an API key.
+- **A fallback that cannot touch the GPU.** Gemma4-E4B on CPU is kept resident
+  in about 5GB of 40GB RAM. `-ngl 0` is not sufficient on a CUDA build of
+  llama.cpp: large prompt batches and the vision projector can still be
+  offloaded. The unit also sets `CUDA_VISIBLE_DEVICES=` so the GPU is simply
+  not there.
+- **A short timeout on Llamacracy, because router calls queue behind its own
+  users.** Its `/v1` shares its FIFO. If someone is mid-way through a long
+  answer, waiting would stall a turn that the local model could plan in
+  seconds. Llamacracy also doesn't say which model is resident, so a router
+  request for a cold model forces a swap there. The configured
+  `ROUTER_PRIMARY_MODEL` should therefore be one that is usually loaded.
+- **Planning is off the GPU and outside the GPU queue.** It runs concurrently,
+  with a small cap per backend. A turn waiting on the user's answer holds no
+  place in line, so nobody waits on someone else's reply. A turn takes its
+  queue position when its plan becomes final.
+
+### Trust and privacy
+
+- **Plans name images by handle.** `a1` is this turn's attachment, `t4.2` is
+  turn 4's second output, `me` is your likeness. Handles resolve only inside
+  the requesting user's scope. The LLM's output is treated as untrusted input,
+  like a form submission: a plan that names something outside your scope is
+  rejected however it came about.
+- **The admin page shows metadata, not content.** The person who owns the GPU
+  can see who ran what, for how long, and at what cost, but not anyone's
+  prompts or images. Saved likenesses, which are photos of friends' faces, are
+  what make that line matter.
+- **Admins come from `ADMIN_EMAILS`, as in Llamacracy.** Identity is still keyed
+  on the OIDC `sub`; the email list is only how an admin is *named* in config,
+  and the flag is refreshed on each login.
+- **Existing v1 rows are claimed by the first admin to sign in.** v1 had no
+  owner column. The alternative, a synthetic "legacy" user, would leave the
+  author's own images in an account nobody can log into.
+
+### Queue and metering
+
+- **Strict FIFO across users; swap reordering only within one user's run.** v1
+  promoted any job whose checkpoint was loaded. With several people in the
+  queue, that reads as someone cutting in line. v2 allows promotion only past
+  jobs with the same owner, inside the contiguous same-owner run at the head.
+  Promoting a user's later job past someone else's queued job would overtake
+  that other person, even if the promoted job belonged to the user at the
+  front.
+- **Power is sampled by calling `nvidia-smi`, as Llamacracy does**, rather than
+  through NVML bindings. It is the same measurement with no new dependency, and
+  the laptop's mobile GPU was checked to report `power.draw`.
+- **CPU energy is estimated** (`NON_GPU_LOAD_WATTS`), because Intel RAPL is
+  root-only here, the standard Platypus side-channel mitigation. The GPU is
+  where nearly all of it goes.
+- **Failed and cancelled jobs are attributed too.** Llamacracy zeroes them
+  because it *bills*, and a failure is not the user's fault. AlchemyUI only
+  *tracks*, and the energy was really spent.
+- **Cost is frozen on the job row** (`rate_used`, `cost_usd`), lifted from
+  Llamacracy, so a rate change never rewrites history.
+
+### Front-end
+
+- **Mode tabs, sampler controls, presets, tags and the history sheet leave the
+  UI.** Threads are the history. The columns stay in the schema, harmless,
+  in case something comes back.
+- **The front-end boot is executed in the test suite, not just parsed.** In v1,
+  `const promptPlaceholder = w =` — a missing `>` — was valid syntax, passed
+  `node --check`, and blanked the entire UI at module load. A chat UI has more
+  boot path to get wrong, not less.
 
 ## Architecture
 
@@ -347,6 +471,9 @@ a job *after* the queue wait and the model load.
 The seam left open in Phase 1, now that there is more than one checkpoint to
 reorder around.
 
+> **v2:** kept, but restricted to one user's own jobs; see *Queue and
+> metering* above. What follows is the single-user reasoning.
+
 - **A swap costs 30s+** — a quarter of an SDXL generation and more than a whole
   SD1.5 one. So within a bounded look-ahead, a job whose checkpoint is already
   resident is promoted ahead of one that would force a load.
@@ -390,7 +517,8 @@ reorder around.
   capped — and matched with comma boundaries, so filtering on `port` does not
   match `portrait`.
 - **Saving a preset over an existing name updates it** rather than erroring.
-  Renaming to reuse a name is a chore, and there is one user.
+  Renaming to reuse a name is a chore, and there is one user. (v2 takes
+  presets, tags and the history sheet out of the UI; see above.)
 
 ## Not built, and why
 
@@ -457,6 +585,10 @@ library.
   itself rather than discarded.
 
 ## Identity
+
+> **v2 overturns this section.** There is a users table, identity is lifted
+> whole from Llamacracy, and friends sign in through Dex. The refusal rule
+> below is kept exactly.
 
 - **There is no auth code, and no users table.** Single user, bound to
   127.0.0.1, `DEV_MODE=1`. Nothing in the schema is keyed per user.

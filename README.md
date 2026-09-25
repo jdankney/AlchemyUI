@@ -5,9 +5,18 @@ Self-hosted image generation with a single prompt box, backed by a local
 graph. Sibling project to **Llamacracy**, built the same way on purpose:
 FastAPI, one SQLite file, vanilla JS with no build step, systemd user units.
 
-One GPU, strict FIFO, honest ETAs. No accounts, no metering, no cloud.
+One GPU, strict FIFO, honest ETAs, no cloud.
 
-**What works today:**
+> **Mid-redesign.** Everything below describes **v1**, which works today: a
+> single-user tool with a six-mode composer. **v2** turns it into a multi-user
+> app like Llamacracy (Dex accounts, strict FIFO across users, per-user energy
+> and cost tracking, a live admin page) driven from one ChatGPT-style prompt
+> box. There, a small language model decides what each message needs: "a
+> spooky lighthouse at night", "add me to this photo of my bed", "put me in
+> Nike Pro sweatpants". See [Roadmap](#roadmap) and
+> [`ALCHEMYUI_SPEC.md`](ALCHEMYUI_SPEC.md) for the plan.
+
+**What works today (v1):**
 
 - **Generate** — text to image on SDXL: prompt, negative prompt, aspect ratio,
   sampler settings, live step-by-step progress, cancel, and a gallery that
@@ -83,7 +92,12 @@ present before you wait through a generation to find out.
 Editing uses the same checkpoint as generation. RealVisXL is not an
 *inpainting* checkpoint, so inpainted regions can show a faint seam; the
 "mask feather" slider is what trades that against how much of the original
-is preserved.
+is preserved. Phase 6 moves inpaint and outpaint onto the dedicated
+Realistic Vision 6.0 inpainting checkpoints, which removes the seam.
+
+Checkpoints now live in family folders (`SD1.5/`, `SD1.5-Inpaint/`, `SDXL/`),
+and ComfyUI names them with that prefix. Until Phase 6 updates the registry
+to match, `alchemyui validate --live` will report the checkpoints as missing.
 
 The quality chain additionally needs `4xNMKDSuperscale_4xNMKDSuperscale.pt`
 in `models/upscale_models/` and `bbox/face_yolov8m.pt` in
@@ -192,7 +206,26 @@ tests/            pytest; no GPU required
 
 ---
 
+## Roadmap
+
+v2, in phases. Each one is built and verified end to end before the next
+starts. The details are in [`ALCHEMYUI_SPEC.md`](ALCHEMYUI_SPEC.md) §14.
+
+| Phase | What it adds |
+|---|---|
+| 1–5 | **v1, complete.** Generate, edit, quality chain, likeness, and the platform layer. |
+| 6 | **Multi-user platform.** Dex accounts via oauth2-proxy, everything scoped per user, strict FIFO across users, energy and cost per job, and a live admin page. The fixed model catalogue and the SD1.5 inpaint models also land here. |
+| 7 | **Chat UI and router.** One prompt box with attachments, threads, and a planner LLM (Llamacracy, with a CPU-only local fallback) that turns each message into a validated plan. |
+| 8 | **Region-aware editing.** "Add me to my bed", "change the sky": segmentation, then inpaint. |
+| 9 | **Web references.** "Me in Nike Pro sweatpants": search, pick, use as reference. |
+
+The design principle that holds it together: **the LLM writes a plan in a
+closed vocabulary, never a graph.** The registry turns the plan into a
+ComfyUI graph and validates it exactly as it does today.
+
+---
+
 ## What this is not
 
-User accounts, multi-tenancy, credits or metering, a node graph editor, model
-downloading, cloud GPUs, video. See `ALCHEMYUI_SPEC.md` §12.
+A node graph editor, billing or usage limits, an OpenAI-compatible API, model
+downloading, cloud GPUs, video. See `ALCHEMYUI_SPEC.md` §15.
