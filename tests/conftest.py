@@ -29,6 +29,20 @@ TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
 
+# Two identities as oauth2-proxy would forward them. Tests that use these run
+# with DEV_MODE unset (the `env` marker), so the app trusts only the headers.
+A = {"X-Forwarded-User": "sub-alice", "X-Forwarded-Email": "alice@example.com",
+     "X-Forwarded-Preferred-Username": "alice"}
+B = {"X-Forwarded-User": "sub-bob", "X-Forwarded-Email": "bob@example.com",
+     "X-Forwarded-Preferred-Username": "bob"}
+
+
+async def add_user(db, sub: str) -> int:
+    """A users row for tests that drive the queue directly, below the HTTP layer."""
+    return await db.insert(
+        "INSERT INTO users (oidc_sub, email, display_name, created_at) VALUES (?, ?, ?, 1)",
+        (sub, f"{sub}@example.com", sub))
+
 
 @pytest.fixture
 def tmp_db_path():

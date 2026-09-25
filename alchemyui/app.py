@@ -78,7 +78,8 @@ async def healthz(comfy: ComfyClient = Depends(get_comfy)):
 
 @app.get("/api/me")
 async def me(principal: Principal = Depends(get_principal)):
-    return {"email": principal.email, "display_name": principal.display_name}
+    return {"email": principal.email, "display_name": principal.display_name,
+            "is_admin": principal.is_admin}
 
 
 @app.get("/api/workflows")

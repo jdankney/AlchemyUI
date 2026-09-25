@@ -62,8 +62,12 @@ class Settings(BaseSettings):
     lora_face_weight: float = 0.45
 
     # --- identity ----------------------------------------------------------
-    # Auth, if ever wanted, lives in oauth2-proxy in front (see deploy/). The
-    # app only ever trusts forwarded headers -- or a fake identity in dev.
+    # Auth lives in oauth2-proxy in front (see deploy/). The app only ever
+    # trusts forwarded headers -- or one fake identity in dev.
+    # Comma-separated. Who may open /admin. Checked against the forwarded
+    # email on every request (Llamacracy's rule); identity itself stays keyed
+    # on the OIDC sub.
+    admin_emails: str = ""
     dev_mode: str = ""
     dev_email: str = "dev@localhost"
     dev_sub: str = "dev-local-sub"
@@ -91,6 +95,10 @@ class Settings(BaseSettings):
     @property
     def is_dev(self) -> bool:
         return self.dev_mode.strip().lower() in {"1", "true", "yes", "on"}
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.admin_emails.split(",") if e.strip()}
 
 
 @lru_cache
