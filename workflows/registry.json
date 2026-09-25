@@ -89,7 +89,7 @@
         "scheduler": "karras"
       },
       "est": {
-        "seconds_per_step": 2.4,
+        "seconds_per_step": 1.05,
         "load_s": 15
       }
     },
@@ -127,7 +127,7 @@
         "cfg": 5.0
       },
       "est": {
-        "seconds_per_step": 1.2,
+        "seconds_per_step": 0.6,
         "load_s": 15
       }
     },
@@ -165,7 +165,7 @@
         "cfg": 7.0
       },
       "est": {
-        "seconds_per_step": 1.2,
+        "seconds_per_step": 0.6,
         "load_s": 15
       }
     },
@@ -201,7 +201,7 @@
         "cfg": 7.5
       },
       "est": {
-        "seconds_per_step": 1.1,
+        "seconds_per_step": 0.6,
         "load_s": 15
       }
     },
@@ -240,7 +240,7 @@
         "cfg": 5.0
       },
       "est": {
-        "seconds_per_step": 1.2,
+        "seconds_per_step": 0.6,
         "load_s": 15
       }
     },
@@ -281,7 +281,7 @@
         "scheduler": "karras"
       },
       "est": {
-        "seconds_per_step": 2.4,
+        "seconds_per_step": 1.05,
         "load_s": 15
       }
     }

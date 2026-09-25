@@ -179,10 +179,25 @@ What building and running the multi-user platform added to the design above.
   `VAEEncodeForInpaint` supplies. So paint-over and extend needed only a
   catalogue change. Live: a lighthouse repainted as a lit stone building,
   with the stars running unbroken through where the mask's edge was.
-- **The Hyper checkpoints keep their seeded defaults** (6 steps, cfg 1.5,
-  `dpmpp_sde`, karras): at six steps the output was clean, not burnt or
-  mushy. Their plugged-in timing is **not yet measured**; the only numbers so
-  far were taken on battery.
+- **Measured on mains, at 512² / 1024²** (the registry's timing seeds now use
+  these figures):
+
+  | Checkpoint | Steps | Wall time | s/step | GPU draw | Energy |
+  |---|---|---|---|---|---|
+  | Realistic Vision Hyper | 6 | 7.0 s warm, 8.8 s cold | 1.05 | 67–75 W | 0.2 Wh |
+  | Realistic Vision 6.0 | 25 | 16.3 s | 0.57 | 75 W | 0.45 Wh |
+  | RealVis XL | 25 | 132 s | 5.06 | 74 W | 3.6 Wh |
+
+  SDXL's 5.06 s/step against v1's 5.25 confirms the battery diagnosis above.
+  Hyper steps cost about twice as much because `dpmpp_sde` evaluates the model
+  twice per step.
+- **Hyper keeps its defaults (6 steps, cfg 1.5, `dpmpp_sde`, karras) and does
+  not become the default "fast" model.** Its output is clean, but in two of
+  two images it stamped fake watermark text into a corner. At cfg 1.5 the
+  negative prompt, which already says "watermark", has almost no effect, so
+  nothing in the prompt can suppress it. RV 6.0 is only nine seconds slower,
+  doesn't do it, and is the crisper of the two on the same seed. So Phase 7's
+  policy should map `fast` to RV 6.0 and keep Hyper for drafts.
 - **The front-end boot is executed in the suite.** `tests/js/boot.mjs` runs
   each page's real script, in node, against a real server. With v1's
   blank-page typo put back into `app.js`, it reports `ReferenceError: w is not
