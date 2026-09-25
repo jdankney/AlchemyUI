@@ -1,6 +1,9 @@
 """FastAPI application. Binds 127.0.0.1 only. Serves the SPA and the JSON/SSE
 API, and is the only thing that ever talks to ComfyUI.
 
+Every row belongs to one user and is served only to them; someone else's is
+a 404, not a 403 -- its existence is not theirs to learn.
+
 Hard rule (spec section 4): port 8188 is never reachable from a browser.
 ComfyUI has no auth and /prompt accepts arbitrary graphs -- that is arbitrary
 node execution and filesystem access. Even finished images are served from
@@ -122,7 +125,7 @@ async def list_workflows(principal: Principal = Depends(get_principal),
 # uploads (Phase 2) -- the source image, and the mask painted over it
 # --------------------------------------------------------------------------- #
 async def _record_upload(db: Database, comfy: ComfyClient, settings: Settings,
-                         data: bytes) -> dict:
+                         data: bytes, user_id: int) -> dict:
     """Normalise an uploaded image, keep our own copy, and put it where
     ComfyUI's LoadImage can find it."""
     try:
@@ -135,9 +138,9 @@ async def _record_upload(db: Database, comfy: ComfyClient, settings: Settings,
     path = save_upload(settings.upload_dir, png, upload_id)
     comfy_name = await comfy.upload_image(png, f"{upload_id}.png")
     await db.execute(
-        "INSERT INTO uploads (id, path, comfy_name, width, height, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (upload_id, path, comfy_name, width, height, now()),
+        "INSERT INTO uploads (id, user_id, path, comfy_name, width, height, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (upload_id, user_id, path, comfy_name, width, height, now()),
     )
     return {"id": upload_id, "width": width, "height": height,
             "url": f"/api/uploads/{upload_id}/file"}
@@ -149,7 +152,7 @@ async def create_upload(file: UploadFile = File(...),
                         settings: Settings = Depends(get_settings),
                         db: Database = Depends(get_db),
                         comfy: ComfyClient = Depends(get_comfy)):
-    return await _record_upload(db, comfy, settings, await file.read())
+    return await _record_upload(db, comfy, settings, await file.read(), principal.user_id)
 
 
 @app.post("/api/uploads/{upload_id}/mask")
@@ -165,7 +168,8 @@ async def attach_mask(upload_id: str,
     against the exact dimensions of the image it was painted over -- a mask
     that doesn't line up inpaints the wrong region, silently.
     """
-    row = await db.fetch_one("SELECT * FROM uploads WHERE id = ?", (upload_id,))
+    row = await db.fetch_one("SELECT * FROM uploads WHERE id = ? AND user_id = ?",
+                             (upload_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such upload")
     try:
@@ -195,20 +199,22 @@ async def reuse_image(image_id: str,
     transformed or painted over. Going through the same normalisation as a
     fresh upload means one code path, and one set of guarantees about size.
     """
-    row = await db.fetch_one("SELECT path FROM images WHERE id = ?", (image_id,))
+    row = await db.fetch_one("SELECT path FROM images WHERE id = ? AND user_id = ?",
+                             (image_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such image")
     path = Path(row["path"])
     if not path.exists():
         raise HTTPException(410, "the file for this image is gone from disk")
-    return await _record_upload(db, comfy, settings, path.read_bytes())
+    return await _record_upload(db, comfy, settings, path.read_bytes(), principal.user_id)
 
 
 @app.get("/api/uploads/{upload_id}/file")
 async def upload_file(upload_id: str, mask: bool = False,
                       principal: Principal = Depends(get_principal),
                       db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT path, mask_path FROM uploads WHERE id = ?", (upload_id,))
+    row = await db.fetch_one("SELECT path, mask_path FROM uploads WHERE id = ? AND user_id = ?",
+                             (upload_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such upload")
     path = Path(row["mask_path"] or "") if mask else Path(row["path"])
@@ -232,7 +238,9 @@ def _ref_row(r) -> dict:
 @app.get("/api/references")
 async def list_references(principal: Principal = Depends(get_principal),
                           db: Database = Depends(get_db)):
-    rows = await db.fetch_all("SELECT * FROM refs ORDER BY created_at DESC LIMIT 100")
+    rows = await db.fetch_all(
+        "SELECT * FROM refs WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
+        (principal.user_id,))
     return {"references": [_ref_row(r) for r in rows]}
 
 
@@ -262,9 +270,9 @@ async def create_reference(file: UploadFile = File(...),
     comfy_name = await comfy.upload_image(png, f"ref-{ref_id}.png")
     ts = now()
     await db.execute(
-        "INSERT INTO refs (id, path, comfy_name, label, width, height, faces_found, "
-        "  face_score, face_px, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (ref_id, path, comfy_name, label, meta["width"], meta["height"],
+        "INSERT INTO refs (id, user_id, path, comfy_name, label, width, height, faces_found, "
+        "  face_score, face_px, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (ref_id, principal.user_id, path, comfy_name, label, meta["width"], meta["height"],
          meta["faces_found"], meta["face_score"], meta["face_px"], ts),
     )
     row = await db.fetch_one("SELECT * FROM refs WHERE id = ?", (ref_id,))
@@ -275,7 +283,8 @@ async def create_reference(file: UploadFile = File(...),
 async def reference_file(ref_id: str,
                          principal: Principal = Depends(get_principal),
                          db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT path FROM refs WHERE id = ?", (ref_id,))
+    row = await db.fetch_one("SELECT path FROM refs WHERE id = ? AND user_id = ?",
+                             (ref_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such reference")
     path = Path(row["path"])
@@ -288,7 +297,8 @@ async def reference_file(ref_id: str,
 async def delete_reference(ref_id: str,
                            principal: Principal = Depends(get_principal),
                            db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT path FROM refs WHERE id = ?", (ref_id,))
+    row = await db.fetch_one("SELECT path FROM refs WHERE id = ? AND user_id = ?",
+                             (ref_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such reference")
     await db.execute("DELETE FROM refs WHERE id = ?", (ref_id,))
@@ -383,7 +393,8 @@ async def generate(req: GenerateRequest,
     if "image" in workflow.requires:
         if not req.image_id:
             raise HTTPException(400, f"{workflow.display} needs an image to work from")
-        upload = await db.fetch_one("SELECT * FROM uploads WHERE id = ?", (req.image_id,))
+        upload = await db.fetch_one("SELECT * FROM uploads WHERE id = ? AND user_id = ?",
+                                    (req.image_id, principal.user_id))
         if upload is None:
             raise HTTPException(404, "no such upload")
         raw["image"] = upload["comfy_name"]
@@ -401,7 +412,8 @@ async def generate(req: GenerateRequest,
             raise HTTPException(400, f"at most {limit} reference photos")
         rows = []
         for ref_id in ids:
-            row = await db.fetch_one("SELECT * FROM refs WHERE id = ?", (ref_id,))
+            row = await db.fetch_one("SELECT * FROM refs WHERE id = ? AND user_id = ?",
+                                     (ref_id, principal.user_id))
             if row is None:
                 raise HTTPException(404, f"reference {ref_id} is no longer available")
             rows.append(row)
@@ -479,7 +491,7 @@ async def generate(req: GenerateRequest,
 async def cancel_job(job_id: str,
                      principal: Principal = Depends(get_principal),
                      qm: QueueManager = Depends(get_queue)):
-    if not await qm.cancel(job_id):
+    if not await qm.cancel(job_id, principal.user_id):
         raise HTTPException(404, "job not found or already finished")
     return {"cancelled": job_id}
 
@@ -493,7 +505,8 @@ async def list_jobs(limit: int = 50,
     reconnect without us having to replay the event stream."""
     limit = max(1, min(limit, 200))
     rows = await db.fetch_all(
-        "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+        "SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+        (principal.user_id, limit)
     )
     etas = qm._etas()
     jobs = []
@@ -527,7 +540,7 @@ async def job_preview(job_id: str,
     exists and the browser fetches it at whatever rate it can keep up with.
     """
     job = qm._by_id.get(job_id)
-    if job is None or job.preview is None:
+    if job is None or job.user_id != principal.user_id or job.preview is None:
         raise HTTPException(404, "no preview available")
     return Response(content=job.preview, media_type=job.preview_media,
                     headers={"Cache-Control": "no-store"})
@@ -568,7 +581,7 @@ async def list_images(limit: int = 100, before: float | None = None,
     in sync and a LIKE over a few thousand rows is instant.
     """
     limit = max(1, min(limit, 500))
-    where, args = [], []
+    where, args = ["user_id = ?"], [principal.user_id]
     if before is not None:
         where.append("created_at < ?")
         args.append(before)
@@ -584,9 +597,7 @@ async def list_images(limit: int = 100, before: float | None = None,
         where.append("workflow_id = ?")
         args.append(workflow_id.strip())
 
-    sql = "SELECT * FROM images"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
+    sql = "SELECT * FROM images WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC LIMIT ?"
     args.append(limit)
     return {"images": [_image_row(r) for r in await db.fetch_all(sql, args)]}
@@ -601,7 +612,8 @@ class ImageUpdate(BaseModel):
 async def update_image(image_id: str, req: ImageUpdate,
                        principal: Principal = Depends(get_principal),
                        db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT * FROM images WHERE id = ?", (image_id,))
+    row = await db.fetch_one("SELECT * FROM images WHERE id = ? AND user_id = ?",
+                             (image_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such image")
     if req.favorite is not None:
@@ -617,7 +629,8 @@ async def update_image(image_id: str, req: ImageUpdate,
 async def list_tags(principal: Principal = Depends(get_principal),
                     db: Database = Depends(get_db)):
     counts: dict[str, int] = {}
-    for r in await db.fetch_all("SELECT tags FROM images WHERE tags != ''"):
+    for r in await db.fetch_all("SELECT tags FROM images WHERE user_id = ? AND tags != ''",
+                                (principal.user_id,)):
         for t in (r["tags"] or "").split(","):
             if t:
                 counts[t] = counts.get(t, 0) + 1
@@ -638,8 +651,8 @@ async def prompt_history(q: str = "", limit: int = 40,
     limit = max(1, min(limit, 200))
     rows = await db.fetch_all(
         "SELECT params_json, workflow_id, MAX(created_at) AS at, COUNT(*) AS n "
-        "FROM images GROUP BY json_extract(params_json, '$.prompt') "
-        "ORDER BY at DESC LIMIT 400"
+        "FROM images WHERE user_id = ? GROUP BY json_extract(params_json, '$.prompt') "
+        "ORDER BY at DESC LIMIT 400", (principal.user_id,)
     )
     needle = q.strip().lower()
     out = []
@@ -673,7 +686,8 @@ def _preset_row(r) -> dict:
 @app.get("/api/presets")
 async def list_presets(principal: Principal = Depends(get_principal),
                        db: Database = Depends(get_db)):
-    rows = await db.fetch_all("SELECT * FROM presets ORDER BY name")
+    rows = await db.fetch_all("SELECT * FROM presets WHERE user_id = ? ORDER BY name",
+                              (principal.user_id,))
     return {"presets": [_preset_row(r) for r in rows]}
 
 
@@ -686,16 +700,17 @@ async def save_preset(req: PresetIn,
         raise HTTPException(400, f"unknown workflow: {req.workflow_id}")
     name = " ".join(req.name.split())
     ts = now()
-    existing = await db.fetch_one("SELECT id FROM presets WHERE name = ?", (name,))
+    existing = await db.fetch_one("SELECT id FROM presets WHERE user_id = ? AND name = ?",
+                                  (principal.user_id, name))
     preset_id = existing["id"] if existing else uuid.uuid4().hex
     # Saving over a name updates it rather than erroring: renaming to reuse a
-    # name is a chore, and there is one user.
+    # name is a chore, and presets are per user.
     await db.execute(
-        "INSERT INTO presets (id, name, workflow_id, params_json, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+        "INSERT INTO presets (id, user_id, name, workflow_id, params_json, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
         "  workflow_id=excluded.workflow_id, params_json=excluded.params_json, "
         "  updated_at=excluded.updated_at",
-        (preset_id, name, req.workflow_id, json.dumps(req.params), ts, ts),
+        (preset_id, principal.user_id, name, req.workflow_id, json.dumps(req.params), ts, ts),
     )
     return _preset_row(await db.fetch_one("SELECT * FROM presets WHERE id = ?", (preset_id,)))
 
@@ -704,7 +719,8 @@ async def save_preset(req: PresetIn,
 async def delete_preset(preset_id: str,
                         principal: Principal = Depends(get_principal),
                         db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT id FROM presets WHERE id = ?", (preset_id,))
+    row = await db.fetch_one("SELECT id FROM presets WHERE id = ? AND user_id = ?",
+                             (preset_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such preset")
     await db.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
@@ -720,7 +736,8 @@ async def delete_preset(preset_id: str,
 async def image_file(image_id: str,
                      principal: Principal = Depends(get_principal),
                      db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT path, filename FROM images WHERE id = ?", (image_id,))
+    row = await db.fetch_one("SELECT path, filename FROM images WHERE id = ? AND user_id = ?",
+                             (image_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such image")
     path = Path(row["path"])
@@ -733,7 +750,8 @@ async def image_file(image_id: str,
 async def delete_image(image_id: str,
                        principal: Principal = Depends(get_principal),
                        db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT path FROM images WHERE id = ?", (image_id,))
+    row = await db.fetch_one("SELECT path FROM images WHERE id = ? AND user_id = ?",
+                             (image_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such image")
     await db.execute("DELETE FROM images WHERE id = ?", (image_id,))
