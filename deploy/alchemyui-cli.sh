@@ -8,11 +8,13 @@
 #   alchemyui-ctl status    unit state + a reachability check on both ends
 #   alchemyui-ctl logs      follow the journal
 #
-# Deliberately one unit, not Llamacracy's four: there is no auth edge and no
-# model server to supervise here. ComfyUI keeps its own lifetime.
+# Two units: the app, and its oauth2-proxy auth edge (only if installed and
+# enabled). ComfyUI keeps its own lifetime.
 set -euo pipefail
 
-UNIT=alchemyui.service
+UNITS=(alchemyui.service)
+[ -f "$HOME/.config/systemd/user/alchemyui-auth.service" ] && \
+  systemctl --user is-enabled -q alchemyui-auth.service 2>/dev/null && UNITS+=(alchemyui-auth.service)
 REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 PORT="$(grep -E '^PORT=' "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ' || true)"
 PORT="${PORT:-8300}"
@@ -35,18 +37,20 @@ Usage: alchemyui-ctl <command>
   logs              follow the journal
   validate          re-check the workflow registry against its templates
 
-Unit: $UNIT
+Units: ${UNITS[*]}
 EOF
 }
 
 cmd_status() {
-  local state
-  state="$(systemctl --user is-active "$UNIT" 2>/dev/null || true)"
-  if [ "$state" = "active" ]; then
-    printf '  \033[1;32m●\033[0m %-20s active\n' "$UNIT"
-  else
-    printf '  \033[1;31m●\033[0m %-20s %s\n' "$UNIT" "${state:-unknown}"
-  fi
+  local state UNIT
+  for UNIT in "${UNITS[@]}"; do
+    state="$(systemctl --user is-active "$UNIT" 2>/dev/null || true)"
+    if [ "$state" = "active" ]; then
+      printf '  \033[1;32m●\033[0m %-24s active\n' "$UNIT"
+    else
+      printf '  \033[1;31m●\033[0m %-24s %s\n' "$UNIT" "${state:-unknown}"
+    fi
+  done
   if curl -sf -o /dev/null --max-time 3 "http://127.0.0.1:${PORT}/healthz"; then
     echo "  app:     ok    http://127.0.0.1:${PORT}"
   else
@@ -61,11 +65,12 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  up) say "starting $UNIT"; systemctl --user start "$UNIT"; sleep 2; cmd_status ;;
-  down) say "stopping $UNIT"; systemctl --user stop "$UNIT"; cmd_status ;;
-  restart) say "restarting $UNIT"; systemctl --user restart "$UNIT"; sleep 2; cmd_status ;;
+  up) say "starting ${UNITS[*]}"; systemctl --user start "${UNITS[@]}"; sleep 2; cmd_status ;;
+  down) say "stopping ${UNITS[*]}"; systemctl --user stop "${UNITS[@]}"; cmd_status ;;
+  restart) say "restarting ${UNITS[*]}"; systemctl --user restart "${UNITS[@]}"; sleep 2; cmd_status ;;
   status) cmd_status ;;
-  logs) exec journalctl --user -u "$UNIT" -f ;;
+  # shellcheck disable=SC2046  # word-splitting into -u flags is the point
+  logs) exec journalctl --user $(printf -- '-u %s ' "${UNITS[@]}") -f ;;
   validate) exec "$REPO/.venv/bin/alchemyui" validate "${@:2}" ;;
   -h|--help|help|"") usage ;;
   *) echo "unknown command: $1" >&2; usage; exit 1 ;;

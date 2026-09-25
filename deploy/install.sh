@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # AlchemyUI deployment. Idempotent -- safe to re-run after every `git pull`.
 #
-# Sets up one systemd *user* unit and the `alchemyui` CLI that controls it.
+# Sets up two systemd *user* units -- the app, and its oauth2-proxy auth edge
+# (started only once it is configured) -- and the CLI that controls them.
 # Scaffolds .env from the committed example. Nothing machine-specific is
 # committed; this script is what fills in this checkout's paths.
 #
@@ -14,6 +15,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT_DIR="$HOME/.config/systemd/user"
+OAUTH2_PROXY_VERSION="v7.6.0"          # Llamacracy's pin
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!! \033[0m %s\n' "$*"; }
@@ -61,7 +63,64 @@ say "installed: alchemyui-ctl up|down|restart|status|logs  (make sure $BIN is on
 warn "note: the CLI is 'alchemyui-ctl'; 'alchemyui' itself is the app's own"
 warn "      command (alchemyui validate), installed into $REPO/.venv/bin"
 
-# --- 7. sanity ---------------------------------------------------------------
+# --- 7. auth edge: oauth2-proxy in front, Llamacracy's Dex behind ------------
+BIN="$HOME/.local/bin"
+if [ ! -x "$BIN/oauth2-proxy" ]; then
+  say "installing oauth2-proxy $OAUTH2_PROXY_VERSION"
+  tmp="$(mktemp -d)"
+  curl -sSL -o "$tmp/o.tar.gz" \
+    "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/${OAUTH2_PROXY_VERSION}/oauth2-proxy-${OAUTH2_PROXY_VERSION}.linux-amd64.tar.gz"
+  tar -xzf "$tmp/o.tar.gz" -C "$tmp" --strip-components=1
+  install -m755 "$tmp/oauth2-proxy" "$BIN/oauth2-proxy"
+  rm -rf "$tmp"
+fi
+
+AUTH_ENV="$REPO/deploy/oauth2-proxy.env"
+fqdn="$(netbird status 2>/dev/null | awk '/^FQDN:/ {print $2}')"
+if [ ! -f "$AUTH_ENV" ]; then
+  cp "$REPO/deploy/oauth2-proxy.env.example" "$AUTH_ENV"
+  [ -n "$fqdn" ] && sed -i "s#REPLACE_FQDN#${fqdn}#g" "$AUTH_ENV"
+  [ -n "${ALCHEMYUI_DEX_FQDN:-}" ] && sed -i "s#REPLACE_DEX_FQDN#${ALCHEMYUI_DEX_FQDN}#g" "$AUTH_ENV"
+  sed -i "s#REPLACE_PORT#${PORT}#g" "$AUTH_ENV"
+  sed -i "s#^OAUTH2_PROXY_COOKIE_SECRET=.*#OAUTH2_PROXY_COOKIE_SECRET=$(openssl rand -base64 32 | tr -- '+/' '-_')#" "$AUTH_ENV"
+  sed -i "s#^OAUTH2_PROXY_CLIENT_SECRET=.*#OAUTH2_PROXY_CLIENT_SECRET=$(openssl rand -hex 32)#" "$AUTH_ENV"
+  warn "created deploy/oauth2-proxy.env with fresh secrets"
+fi
+sed -e "s#@REPO@#${REPO}#g" "$REPO/deploy/systemd/alchemyui-auth.service" \
+  > "$UNIT_DIR/alchemyui-auth.service"
+systemctl --user daemon-reload
+
+if grep -q 'REPLACE_' "$AUTH_ENV"; then
+  warn "deploy/oauth2-proxy.env still has REPLACE_ placeholders -- the auth edge stays off."
+  warn "  re-run with ALCHEMYUI_DEX_FQDN=<dex-server's NetBird FQDN> ./deploy/install.sh,"
+  warn "  or edit them by hand, then re-run."
+else
+  secret="$(grep '^OAUTH2_PROXY_CLIENT_SECRET=' "$AUTH_ENV" | cut -d= -f2-)"
+  redirect="$(grep '^OAUTH2_PROXY_REDIRECT_URL=' "$AUTH_ENV" | cut -d= -f2-)"
+  say "register AlchemyUI in Llamacracy's Dex (deploy/dex/config.yaml on dex-server),"
+  say "under staticClients, then restart Dex there:"
+  cat <<EOF
+
+    - id: alchemyui
+      name: AlchemyUI
+      secret: ${secret}
+      redirectURIs:
+        - ${redirect}
+
+EOF
+  if [ "${ALCHEMYUI_START_AUTH:-0}" = "1" ]; then
+    systemctl --user enable --now alchemyui-auth.service
+    say "auth edge up -- friends reach AlchemyUI at  ${redirect%/oauth2/callback}"
+  else
+    warn "once Dex has the client, start the edge:  ALCHEMYUI_START_AUTH=1 ./deploy/install.sh"
+  fi
+  if grep -qE '^DEV_MODE=(1|true|yes|on)' "$REPO/.env"; then
+    warn "DEV_MODE is still set in .env: behind oauth2-proxy, unset it, or every"
+    warn "visitor is treated as the one dev identity."
+  fi
+fi
+
+# --- 8. sanity ---------------------------------------------------------------
 for _ in 1 2 3 4 5 6 7 8; do
   curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:${PORT}/healthz" && break
   sleep 1
@@ -70,6 +129,5 @@ echo
 say "done. Status:  alchemyui-ctl status"
 echo "  AlchemyUI is at  http://127.0.0.1:${PORT}"
 echo
-echo "  Single user, bound to localhost, DEV_MODE=1 -- there is no auth."
-echo "  To share over NetBird: register a second client in Llamacracy's Dex,"
-echo "  run an oauth2-proxy in front, and unset DEV_MODE (see docs/DECISIONS.md)."
+echo "  Locally: DEV_MODE=1 gives one fake identity, no login."
+echo "  For friends over NetBird: the auth edge above, then unset DEV_MODE."

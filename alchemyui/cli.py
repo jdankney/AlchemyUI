@@ -1,4 +1,5 @@
-"""`alchemyui validate` -- the standalone workflow check.
+"""`alchemyui` -- the app's own utilities: `validate`, the standalone workflow
+check, and `reassign`.
 
 Node IDs are brittle: rebuilding a graph in the ComfyUI editor renumbers them,
 and a registry entry that still points at the old numbers will submit happily
@@ -8,6 +9,8 @@ startup error instead, and it runs on every boot as well as from here.
     alchemyui validate          registry <-> templates, offline, no GPU
     alchemyui validate --live   also ask a running ComfyUI whether the node
                                 classes are installed and the checkpoints exist
+    alchemyui reassign FROM TO  move every image, job, upload, reference and
+                                preset from one account (by email) to another
 """
 
 from __future__ import annotations
@@ -105,6 +108,43 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reassign(args: argparse.Namespace) -> int:
+    """Presets are unique per user by name, so one the target already has by
+    that name is left with its original owner rather than failing the move."""
+    import sqlite3
+
+    from .db import Database
+
+    db = Database(get_settings().database_path)
+    try:
+        c = db._conn
+
+        def uid(email):
+            r = c.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (email,)).fetchone()
+            return r[0] if r else None
+
+        src, dst = uid(args.src), uid(args.dst)
+        if src is None or dst is None:
+            print(f"  {BAD} both accounts must have signed in at least once "
+                  f"({args.src}: {'ok' if src else 'unknown'}, {args.dst}: {'ok' if dst else 'unknown'})")
+            return 1
+        c.execute("BEGIN")
+        try:
+            for t in ("jobs", "images", "uploads", "refs"):
+                n = c.execute(f"UPDATE {t} SET user_id = ? WHERE user_id = ?", (dst, src)).rowcount
+                print(f"  {OK} {t:<8} {n} row(s)")
+            n = c.execute("UPDATE OR IGNORE presets SET user_id = ? WHERE user_id = ?",
+                          (dst, src)).rowcount
+            print(f"  {OK} presets  {n} row(s)")
+            c.execute("COMMIT")
+        except sqlite3.Error:
+            c.execute("ROLLBACK")
+            raise
+        return 0
+    finally:
+        db.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="alchemyui", description="AlchemyUI utilities")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -113,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--live", action="store_true",
                    help="also verify node classes and checkpoints against a running ComfyUI")
     v.set_defaults(func=cmd_validate)
+
+    r = sub.add_parser("reassign", help="move one account's rows to another, by email")
+    r.add_argument("src", metavar="FROM")
+    r.add_argument("dst", metavar="TO")
+    r.set_defaults(func=cmd_reassign)
 
     args = parser.parse_args(argv)
     return args.func(args)
