@@ -5,9 +5,11 @@ and the dev identity all live in the gitignored .env the installer scaffolds.
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,6 +74,37 @@ class Settings(BaseSettings):
     dev_email: str = "dev@localhost"
     dev_sub: str = "dev-local-sub"
     dev_name: str = "Dev User"
+
+    # --- metering (v2) -------------------------------------------------------
+    # Visibility, not billing: every job's energy and its electricity cost are
+    # recorded and shown per user. Nothing is ever blocked on them.
+    # CPU and the rest of the laptop while it generates. Intel RAPL is
+    # root-only here (the Platypus mitigation), so this is an estimate.
+    non_gpu_load_watts: float = 25.0
+    # Used only if nvidia-smi gave no reading for a job.
+    gpu_fallback_watts: float = 60.0
+    electricity_rate: float = 0.30           # $/kWh, flat
+    tou_schedule: str = ""                   # JSON {"0": 0.25, ..., "23": 0.30}, local hours
+
+    @property
+    def tou_table(self) -> dict[int, float] | None:
+        if not self.tou_schedule.strip():
+            return None
+        raw = json.loads(self.tou_schedule)
+        return {int(k): float(v) for k, v in raw.items()}
+
+    def rate_for_hour(self, hour_local: int) -> float:
+        table = self.tou_table
+        if table is None:
+            return self.electricity_rate
+        return table.get(hour_local % 24, self.electricity_rate)
+
+    @field_validator("tou_schedule")
+    @classmethod
+    def _validate_tou(cls, v: str) -> str:
+        if v.strip():
+            json.loads(v)  # fail fast on malformed JSON
+        return v
 
     # --- queue -------------------------------------------------------------
     # How long a submitted prompt may sit before ComfyUI starts executing it.

@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from .comfy import ComfyClient, ComfyError, get_comfy
 from .config import Settings, get_settings
 from .db import Database, get_db, now
+from .meter import finalise
+from .power import GpuPowerSampler
 from .registry import Registry, WorkflowInfo, get_registry
 from .storage import output_images, png_size, save_output
 
@@ -77,6 +79,12 @@ class Job:
     started_at: float | None = None        # ComfyUI began executing this prompt
     sampling_started_at: float | None = None  # first sampler step -- load ends here
     finished_at: float | None = None
+    picked_at: float | None = None          # worker took it: GPU occupancy starts
+    occupancy_seconds: float | None = None
+    gpu_watts_mean: float | None = None
+    energy_wh: float | None = None
+    rate_used: float | None = None
+    cost_usd: float | None = None
 
     cold_start: bool = False
     skips: int = 0                # times this job was passed over for a swap
@@ -135,8 +143,11 @@ class Job:
 
 
 class QueueManager:
-    def __init__(self, db: Database, comfy: ComfyClient, registry: Registry, settings: Settings):
+    def __init__(self, db: Database, comfy: ComfyClient, registry: Registry, settings: Settings,
+                 sampler_factory=None):
         self.db = db
+        # None means GpuPowerSampler, looked up at call time so tests can swap it.
+        self._sampler_factory = sampler_factory
         self.comfy = comfy
         self.reg = registry
         self.cfg = settings
@@ -554,6 +565,9 @@ class QueueManager:
                 continue
 
             self._active = job
+            job.picked_at = now()
+            sampler = (self._sampler_factory or GpuPowerSampler)()
+            sampler.start()
             job.state = JobState.RUNNING
             job.cold_start = job.checkpoint != self._resident_checkpoint
             await self._persist_job(job)
@@ -581,12 +595,18 @@ class QueueManager:
                 job.error_text = "The app hit an unexpected error handling this job."
                 job.error_detail = repr(e)
             finally:
+                await sampler.stop()
                 self._active = None
                 if not shutting_down:
                     if job.finished_at is None:
                         job.finished_at = now()
                     if job.state not in TERMINAL:
                         job.state = JobState.COMPLETED
+                    # Everything that held the GPU is metered, failures and
+                    # cancellations too, and the result is frozen on the row.
+                    r = finalise(job.picked_at, job.finished_at, sampler.mean, self.cfg)
+                    job.occupancy_seconds, job.gpu_watts_mean = r.occupancy_seconds, r.gpu_watts_mean
+                    job.energy_wh, job.rate_used, job.cost_usd = r.energy_wh, r.rate_used, r.cost_usd
                     await self._persist_job(job)
                     job.preview = None          # the real image supersedes it
                     job._done.set()
@@ -865,16 +885,22 @@ class QueueManager:
         await self.db.execute(
             "INSERT INTO jobs (id, workflow_id, user_id, status, prompt_id, queue_position, "
             "  params_json, input_image_path, mask_path, error_text, error_detail, checkpoint, "
-            "  steps, created_at, started_at, finished_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "  steps, created_at, started_at, finished_at, picked_at, occupancy_seconds, "
+            "  gpu_watts_mean, energy_wh, rate_used, cost_usd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "  status=excluded.status, queue_position=excluded.queue_position, "
             "  error_text=excluded.error_text, error_detail=excluded.error_detail, "
-            "  started_at=excluded.started_at, finished_at=excluded.finished_at",
+            "  started_at=excluded.started_at, finished_at=excluded.finished_at, "
+            "  picked_at=excluded.picked_at, occupancy_seconds=excluded.occupancy_seconds, "
+            "  gpu_watts_mean=excluded.gpu_watts_mean, energy_wh=excluded.energy_wh, "
+            "  rate_used=excluded.rate_used, cost_usd=excluded.cost_usd",
             (job.id, job.workflow_id, job.user_id, job.state.value, job.id,
              self.position_of(job.id),
              json.dumps(job.params), None, None, job.error_text, job.error_detail,
-             job.checkpoint, job.steps, job.created_at, job.started_at, job.finished_at),
+             job.checkpoint, job.steps, job.created_at, job.started_at, job.finished_at,
+             job.picked_at, job.occupancy_seconds, job.gpu_watts_mean, job.energy_wh,
+             job.rate_used, job.cost_usd),
         )
 
 

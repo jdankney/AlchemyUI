@@ -18,7 +18,7 @@ from alchemyui.config import Settings
 from alchemyui.db import Database
 from alchemyui.queue import Job, JobState, QueueManager
 from alchemyui.registry import load_registry
-from tests.conftest import FakeComfy, add_user
+from tests.conftest import FakeComfy, FixedSampler, add_user
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOWS = REPO / "workflows"
@@ -32,7 +32,8 @@ def _settings(output_dir: str) -> Settings:
 
 
 async def _make_qm(db_path: str, output_dir: str, comfy: FakeComfy) -> QueueManager:
-    qm = QueueManager(Database(db_path), comfy, load_registry(WORKFLOWS), _settings(output_dir))
+    qm = QueueManager(Database(db_path), comfy, load_registry(WORKFLOWS), _settings(output_dir),
+                      sampler_factory=FixedSampler)
     await qm.start()
     return qm
 

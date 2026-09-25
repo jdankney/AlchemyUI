@@ -173,6 +173,23 @@ class FakeComfy:
         return TINY_PNG
 
 
+class FixedSampler:
+    """Stands in for GpuPowerSampler: a known wattage, no nvidia-smi."""
+
+    def __init__(self, watts: float | None = 40.0):
+        self.watts = watts
+
+    def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    @property
+    def mean(self) -> float | None:
+        return self.watts
+
+
 def _wire(monkeypatch, db_path: str, output_dir: str, env: dict) -> tuple[Database, FakeComfy]:
     """Point the app at a temp database, a temp output directory and a scripted
     ComfyUI -- but the real, shipped registry and template, so the workflow
@@ -191,6 +208,8 @@ def _wire(monkeypatch, db_path: str, output_dir: str, env: dict) -> tuple[Databa
         monkeypatch.setattr(mod, "get_db", lambda: db)
         monkeypatch.setattr(mod, "get_comfy", lambda: comfy)
         monkeypatch.setattr(mod, "get_registry", lambda: reg)
+    # no test ever shells out to nvidia-smi
+    monkeypatch.setattr(queuemod, "GpuPowerSampler", FixedSampler)
     appmod.app.dependency_overrides[get_db] = lambda: db
     appmod.app.dependency_overrides[get_comfy] = lambda: comfy
     appmod.app.dependency_overrides[get_registry] = lambda: reg
