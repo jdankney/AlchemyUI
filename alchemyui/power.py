@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+from pathlib import Path
 
 log = logging.getLogger("alchemyui.power")
 
@@ -66,13 +67,54 @@ class GpuPowerSampler:
         return round(sum(self._samples) / len(self._samples), 1)
 
 
+_STATS = ("memory.used,memory.total,temperature.gpu,power.draw,utilization.gpu,"
+          "enforced.power.limit,power.default_limit")
+
+
+def _num(v: str) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None             # "[N/A]" on a GPU that cannot report it
+
+
+def parse_stats(row: list[str] | None) -> dict:
+    """One nvidia-smi row -> the admin page's live tiles.
+
+    `capped` is the reading that matters most on a laptop. Unplugged, the
+    driver clamps this 1660 Ti to 10 of its 80 watts (P8, 300 MHz, "SW Power
+    Cap: Active") and every generation runs ~10x slower. From the outside
+    that looks exactly like a broken app.
+    """
+    if not row or len(row) < 5:
+        return {"available": False}
+    used, total, temp, power, util = (_num(v) for v in row[:5])
+    if None in (used, total, power):
+        return {"available": False}
+    limit = _num(row[5]) if len(row) > 5 else None
+    default = _num(row[6]) if len(row) > 6 else None
+    return {
+        "available": True,
+        "vram_used_mib": int(used), "vram_total_mib": int(total),
+        "temp_c": temp, "power_w": power, "util_pct": util,
+        "power_limit_w": limit, "default_limit_w": default,
+        "capped": bool(limit and default and limit < 0.5 * default),
+    }
+
+
+def on_mains() -> bool | None:
+    """True on AC, False on battery, None where there is no such supply."""
+    for supply in Path("/sys/class/power_supply").glob("*"):
+        try:
+            if (supply / "type").read_text().strip() == "Mains":
+                return (supply / "online").read_text().strip() == "1"
+        except OSError:
+            continue
+    return None
+
+
 async def gpu_stats() -> dict:
     """One snapshot for the admin page's live tiles."""
-    row = await _query("memory.used,memory.total,temperature.gpu,power.draw,utilization.gpu")
-    try:
-        used, total, temp, power, util = row  # type: ignore[misc]
-        return {"vram_used_mib": int(float(used)), "vram_total_mib": int(float(total)),
-                "temp_c": float(temp), "power_w": float(power), "util_pct": float(util),
-                "available": True}
-    except (TypeError, ValueError):
-        return {"available": False}
+    stats = parse_stats(await _query(_STATS))
+    stats["on_mains"] = on_mains()
+    return stats

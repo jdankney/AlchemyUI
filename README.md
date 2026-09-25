@@ -7,10 +7,12 @@ FastAPI, one SQLite file, vanilla JS with no build step, systemd user units.
 
 One GPU, strict FIFO, honest ETAs, no cloud.
 
-> **Mid-redesign.** Everything below describes **v1**, which works today: a
-> single-user tool with a six-mode composer. **v2** turns it into a multi-user
-> app like Llamacracy (Dex accounts, strict FIFO across users, per-user energy
-> and cost tracking, a live admin page) driven from one ChatGPT-style prompt
+> **Mid-redesign.** **v2** turns AlchemyUI into a multi-user app like
+> Llamacracy, driven from one ChatGPT-style prompt box. **Phase 6 is in**:
+> accounts through Dex, everything scoped per user, strict FIFO across users,
+> per-job energy and cost, and a live admin page (see
+> [Accounts and the admin page](#accounts-and-the-admin-page)). The UI is
+> still v1's six-mode composer until Phase 7 replaces it with the prompt
 > box. There, a small language model decides what each message needs: "a
 > spooky lighthouse at night", "add me to this photo of my bed", "put me in
 > Nike Pro sweatpants". See [Roadmap](#roadmap) and
@@ -82,22 +84,26 @@ each with its own native resolutions and sampling defaults — SD1.5 and SDXL
 want very different numbers. A workflow declares which families its template
 suits, and the picker only offers models it can actually run.
 
-The default checkpoint is `RealVisXL_V5.0_fp16.safetensors` in
-`~/ComfyUI/models/checkpoints/`. To use a different SDXL checkpoint, change the
-`checkpoint` field in `workflows/registry.json` — no code changes.
+Checkpoints live in family folders under `~/ComfyUI/models/checkpoints/`, and
+the registry names them the way ComfyUI does, folder included:
+
+| Family | Checkpoints |
+|---|---|
+| `SDXL/` | RealVis XL 5.0 (the default for generation) |
+| `SD1.5/` | Realistic Vision 6.0, Realistic Vision Hyper (six steps), epiCRealism, SD 1.5 base |
+| `SD1.5-Inpaint/` | Realistic Vision 6.0 Inpainting (the default for paint-over and extend), and its Hyper variant |
+
+Each carries `traits` (`fast`, `quality`, `photoreal`, `inpaint`) that
+Phase 7's model policy chooses on. To add one, drop it into its family folder
+and add an entry to the `checkpoints` block of `workflows/registry.json` — no
+code changes. Old bare filenames from v1 presets still resolve.
 
 `alchemyui validate --live` tells you whether the checkpoint is actually
 present before you wait through a generation to find out.
 
-Editing uses the same checkpoint as generation. RealVisXL is not an
-*inpainting* checkpoint, so inpainted regions can show a faint seam; the
-"mask feather" slider is what trades that against how much of the original
-is preserved. Phase 6 moves inpaint and outpaint onto the dedicated
-Realistic Vision 6.0 inpainting checkpoints, which removes the seam.
-
-Checkpoints now live in family folders (`SD1.5/`, `SD1.5-Inpaint/`, `SDXL/`),
-and ComfyUI names them with that prefix. Until Phase 6 updates the registry
-to match, `alchemyui validate --live` will report the checkpoints as missing.
+Paint-over and extend default to the dedicated inpainting UNet, whose
+nine-channel input sees the unmasked image while it samples. That is what
+removes the faint seam v1 showed when it inpainted with RealVisXL.
 
 The quality chain additionally needs `4xNMKDSuperscale_4xNMKDSuperscale.pt`
 in `models/upscale_models/` and `bbox/face_yolov8m.pt` in
@@ -122,6 +128,38 @@ alchemyui-ctl logs
 
 Idempotent — safe to re-run after every `git pull`. It does not manage ComfyUI;
 that has its own flags and its own lifetime.
+
+---
+
+## Accounts and the admin page
+
+Locally, `DEV_MODE=1` gives you one fake identity and no login. To share over
+NetBird, `deploy/install.sh` sets up an oauth2-proxy on this machine's NetBird
+interface that authenticates against Llamacracy's Dex: it prints the client
+entry to add to Dex's `config.yaml` on the other box. Then unset `DEV_MODE`.
+Without `DEV_MODE`, the app refuses to serve any request that lacks
+oauth2-proxy's identity headers, so it can never run open by accident.
+
+- **Everyone's work is their own.** Images, jobs, uploads, reference faces,
+  presets and the live event stream are scoped to their owner. Someone else's
+  item is a 404, not a 403.
+- **Strict FIFO across users.** The queue still groups one person's jobs by
+  model to avoid a 30s checkpoint swap, but it never moves anyone ahead of
+  someone else.
+- **`ADMIN_EMAILS`** (comma-separated) names who may open `/admin`: the GPU
+  live (watts, temperature, VRAM, utilisation), the queue with each job's
+  owner, energy and cost per user over 7 days, 30 days or all time, recent
+  failures, and disabling an account. It shows **metadata only**: never
+  anyone's prompts or images.
+- **Energy** is the GPU's measured draw (sampled with `nvidia-smi` while a job
+  holds it) plus `NON_GPU_LOAD_WATTS` for the rest of the machine, times the
+  time it held the GPU. Cost uses `ELECTRICITY_RATE`, or `TOU_SCHEDULE` for
+  time-of-use rates, and is frozen on the job. It is for visibility; nothing
+  is ever blocked on it.
+- **The first admin to sign in inherits everything v1 made.**
+  `uv run alchemyui reassign FROM_EMAIL TO_EMAIL` moves an account's rows
+  elsewhere. Use it when you switch from the dev identity to your real Dex
+  login, or when someone's Dex account is recreated.
 
 ---
 
@@ -179,7 +217,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 140 tests, no GPU and no ComfyUI needed
+uv run pytest -q          # 183 tests, no GPU, no ComfyUI; node for the front-end boot test
 uv run ruff check .
 ```
 
@@ -195,9 +233,11 @@ never completes.
 ```
 alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
                   registry.py workflows · storage.py files+uploads
-                  faces.py reference validation · cli.py validate
+                  faces.py reference validation · cli.py validate, reassign
+                  identity.py users · admin.py /api/admin · power.py nvidia-smi
+                  meter.py energy and cost
 workflows/        registry.json (workflows + checkpoints) + seven templates
-deploy/           systemd user unit, idempotent install.sh, alchemyui-ctl
+deploy/           app + auth-edge units, oauth2-proxy config, install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
 tests/            pytest; no GPU required
 ```

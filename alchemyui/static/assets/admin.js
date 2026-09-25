@@ -45,7 +45,14 @@ function liveSection() {
   if (!L) return h('p', { class: 'muted' }, 'Loading…');
   const g = L.gpu || {};
   const running = L.queue.jobs.find(j => j.position === 0);
-  return h('section', {},
+  // The one reading that explains "why is everything slow?" from a distance.
+  const capped = g.available && g.capped
+    ? h('div', { class: 'card', style: 'padding:10px 14px;margin-bottom:10px;color:var(--warn)' },
+      `GPU power-capped at ${g.power_limit_w} W of ${g.default_limit_w} W`,
+      L.gpu.on_mains === false ? ' — the machine is on battery.' : '.',
+      ' Generations will run several times slower until it is lifted.')
+    : null;
+  return h('section', {}, capped,
     h('div', { class: 'adm-tiles' },
       tile('GPU draw', g.available ? `${g.power_w.toFixed(0)} W` : 'n/a', g.available ? `${g.temp_c.toFixed(0)} °C` : null),
       tile('Utilisation', g.available ? `${g.util_pct.toFixed(0)}%` : 'n/a'),

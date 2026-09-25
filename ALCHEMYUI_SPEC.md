@@ -439,7 +439,7 @@ Llamacracy's model, used for visibility only.
   tracks, and the energy was really spent.
 - **Router tokens** are recorded per turn but not costed here. Llamacracy
   already meters them on its side.
-- **Admin page** (`/admin`, live over its own SSE stream):
+- **Admin page** (`/admin`, polled every 2s, as Llamacracy's is — which also keeps `nvidia-smi` quiet when nobody is looking):
   - **Live tiles:** GPU watts, temperature, utilisation, VRAM; the running job
     and its owner; queue depth; the resident checkpoint; router status
     (primary reachable, or fallback active).
@@ -447,7 +447,7 @@ Llamacracy's model, used for visibility only.
     or all time.
   - **Recent failures and router fallbacks.**
   - **Users:** disable and enable.
-  - Live GPU stats are polled only while an admin page is connected.
+  - Live GPU stats are read only while an admin page is open and visible.
 - **Users** see their own month in settings: images, kWh and cost.
 - The numbers are an estimate of the GPU's share, not a wall-socket reading,
   and the page says so.
