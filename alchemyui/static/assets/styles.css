@@ -440,3 +440,20 @@ button.tag:hover { border-color: var(--accent-line); color: var(--accent); }
   .mask-size { max-width: none; }
   .seg button { padding: 5px 8px; font-size: 12px; }
 }
+
+/* --- admin page ----------------------------------------------------------- */
+.adm { padding-top: 20px; padding-bottom: 40px; }
+.adm section { margin: 24px 0; }
+.adm h1 { font-size: 20px; margin: 0; }
+.adm h2 { font-size: 15px; margin: 0 0 6px; }
+.adm-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.adm-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.adm-tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; }
+.adm-big { font-size: 22px; font-weight: 600; margin: 2px 0; }
+.adm-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+.adm-table th { text-align: left; font-weight: 500; color: var(--text-2); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.adm-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+@media (max-width: 640px) {
+  .adm-table { font-size: 12px; display: block; overflow-x: auto; }
+  .adm-table td, .adm-table th { padding: 5px 4px; }
+}

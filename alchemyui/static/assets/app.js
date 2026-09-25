@@ -282,6 +282,10 @@ function topbar() {
     h('span', { id: 'status-badge' }, statusBadge()),
     h('div', { class: 'spacer' }),
     h('span', { id: 'queue-badge', class: 'small muted' }, queueLabel()),
+    // v2: who you are, and a way in for admins. The admin page is separate so
+    // Phase 7's SPA rewrite never has to carry it.
+    h('span', { class: 'small muted' }, S.me?.display_name || ''),
+    S.me?.is_admin ? h('a', { class: 'small', href: '/admin' }, 'Admin') : null,
   );
 }
 function renderTopbar() {
