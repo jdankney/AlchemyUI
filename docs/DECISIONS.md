@@ -133,6 +133,71 @@ these are the reasons.
   `node --check`, and blanked the entire UI at module load. A chat UI has more
   boot path to get wrong, not less.
 
+
+## Phase 6 — as built
+
+What building and running the multi-user platform added to the design above.
+
+- **Verified live, with two users and the real ComfyUI.** Alice ran a job on
+  the Hyper checkpoint, then Bob queued SDXL and Alice queued Hyper again.
+  They ran **Alice, Bob, Alice**, even though Alice's second job had its model
+  already loaded; v1 would have promoted it past Bob. Over the whole run,
+  Bob's event stream carried 34 events: none named Alice's jobs or contained
+  her prompt text, yet he still saw the queue depth reach 2. The admin page,
+  polled 476 times, showed each running job's owner and no prompt text.
+- **Your v1 database migrates in place.** 49 jobs, 43 images, 2 references and
+  1 preset came through with the integrity check `ok` and no foreign-key
+  violations (tested on a copy first). On the first admin request, all 43
+  images were claimed by that account.
+- **Indexes on new columns are created after the migrations, not in
+  `schema.sql`.** `schema.sql` runs first, so an index on a column an old
+  database doesn't have yet would abort startup before the `ALTER` that adds
+  it.
+- **Metering values are stored exact and rounded only for display.**
+  Rounding to fixed decimals at storage time broke two ways, both caught by
+  tests. A stored energy figure stopped agreeing with the stored occupancy it
+  was supposed to be derived from. And small values became zero: an API
+  reporting kWh to five places returned `0.0` for a short job. SQLite `REAL`
+  is a double, so there was nothing to save by rounding.
+- **The admin page polls, as Llamacracy's does, and is its own page.**
+  Polling keeps `nvidia-smi` from running when nobody is looking, without a
+  second event stream. A separate `/admin` page means Phase 7's SPA rewrite
+  never has to carry it.
+- **A laptop on battery looks exactly like a broken app.** Unplugged, the
+  driver caps the 1660 Ti at **10 of its 80 W** (P8, 300 MHz, "SW Power Cap:
+  Active"). SDXL then ran at **54.5 s/step against 5.25 s/step** plugged in,
+  and a six-step Hyper image took 75 s. The metering was honest about it
+  (12.7 W measured), but nothing said *why*. The admin page now reads the
+  enforced power limit and mains state and says so in words. The same run
+  also showed why ETAs can't be trusted on battery: the per-step EWMA learns
+  from whatever it observes. The acceptance runs used a scratch database, so
+  the real one's timings were not polluted.
+- **The dedicated inpainting UNet works through the existing templates.**
+  ComfyUI builds a 9-channel model's extra input from the sampler's
+  `latent_image` and `denoise_mask` when no `concat_latent_image` is given
+  (`comfy/model_base.py: concat_cond`), which is exactly what
+  `VAEEncodeForInpaint` supplies. So paint-over and extend needed only a
+  catalogue change. Live: a lighthouse repainted as a lit stone building,
+  with the stars running unbroken through where the mask's edge was.
+- **The Hyper checkpoints keep their seeded defaults** (6 steps, cfg 1.5,
+  `dpmpp_sde`, karras): at six steps the output was clean, not burnt or
+  mushy. Their plugged-in timing is **not yet measured**; the only numbers so
+  far were taken on battery.
+- **The front-end boot is executed in the suite.** `tests/js/boot.mjs` runs
+  each page's real script, in node, against a real server. With v1's
+  blank-page typo put back into `app.js`, it reports `ReferenceError: w is not
+  defined` and 0 rendered nodes, where `node --check` passes. On its first
+  run it also caught `admin.js` leaving a failed fetch unhandled at boot.
+- **Tests read the developer's `.env`.** `Settings` loads the repo's `.env`,
+  so a test that depends on who the dev identity is has to pin `DEV_EMAIL`
+  itself. The front-end test does; it failed until it did, because this
+  machine's `DEV_EMAIL` is not `dev@localhost`.
+- **The installer ships unexecuted.** It enables linger, downloads
+  oauth2-proxy and writes systemd units. It is syntax-checked, and the control
+  script it installs was exercised, but registering AlchemyUI in Dex is a
+  change on dex-server: the installer prints the exact `staticClients`
+  entry rather than making it.
+
 ## Architecture
 
 - **FastAPI + one SQLite connection (WAL) behind one asyncio lock**, lifted
