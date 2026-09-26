@@ -546,3 +546,60 @@ async def test_events_reach_only_the_jobs_owner(tmp_db_path, tmp_output_dir):
         assert "a secret fox" not in json.dumps(eb)
     finally:
         await qm.stop()
+
+
+# --- Phase 7: turns ------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_listeners_hear_every_finished_job_and_turn_id_persists(tmp_db_path, tmp_output_dir):
+    """The turn engine moves turns along from this hook, so it must fire for
+    completed, failed and cancelled-while-queued jobs alike."""
+    comfy = FakeComfy()
+    comfy.delay = 0.02
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    heard = []
+
+    async def on_done(job):
+        heard.append((job.id, job.state.value, job.turn_id))
+
+    async def broken(job):
+        raise RuntimeError("a listener bug must not stop the worker")
+
+    qm.add_listener(broken)
+    qm.add_listener(on_done)
+    try:
+        w = qm.reg.require("txt2img-sdxl")
+        a = await qm.submit(w, w.resolve({"prompt": "x", "steps": 4}), turn_id="turn-1")
+        b = await qm.submit(w, w.resolve({"prompt": "y", "steps": 4}), turn_id="turn-2")
+        await qm.cancel(b.id)
+        await asyncio.wait_for(a._done.wait(), 10)
+        await asyncio.sleep(0.05)
+        assert sorted(heard) == sorted([(a.id, "completed", "turn-1"),
+                                        (b.id, "cancelled", "turn-2")])
+        assert a.public()["turn_id"] == "turn-1"
+        row = await qm.db.fetch_one("SELECT turn_id FROM jobs WHERE id = ?", (a.id,))
+        assert row["turn_id"] == "turn-1"
+        img = await qm.db.fetch_one("SELECT turn_id FROM images WHERE job_id = ?", (a.id,))
+        assert img["turn_id"] == "turn-1"
+        # a later upsert must not wipe it
+        await qm._persist_job(a)
+        row = await qm.db.fetch_one("SELECT turn_id FROM jobs WHERE id = ?", (a.id,))
+        assert row["turn_id"] == "turn-1"
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_turn_id_survives_a_restart(tmp_db_path, tmp_output_dir):
+    comfy = FakeComfy()
+    comfy.mode = "hang"
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    w = qm.reg.require("txt2img-sdxl")
+    await qm.submit(w, w.resolve({"prompt": "x"}), turn_id="t-running")
+    queued = await qm.submit(w, w.resolve({"prompt": "y"}), turn_id="t-queued")
+    await asyncio.sleep(0.05)
+    await qm.stop()
+    qm2 = await _make_qm(tmp_db_path, tmp_output_dir, FakeComfy())
+    try:
+        assert qm2._by_id[queued.id].turn_id == "t-queued"
+    finally:
+        await qm2.stop()

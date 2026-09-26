@@ -72,6 +72,7 @@ class Job:
     workflow_id: str
     params: dict
     user_id: int | None = None     # owner; None only for v1 rows not yet claimed
+    turn_id: str | None = None     # the chat turn that asked for it; None from /api/generate
     id: str = field(default_factory=new_job_id)
     state: JobState = JobState.QUEUED
 
@@ -122,6 +123,7 @@ class Job:
         return {
             "id": self.id,
             "workflow_id": self.workflow_id,
+            "turn_id": self.turn_id,
             "status": self.state.value,
             "position": position,
             "eta_s": round(eta_s, 1) if eta_s is not None else None,
@@ -176,6 +178,7 @@ class QueueManager:
 
         self._tasks: list[asyncio.Task] = []
         self._bg: set[asyncio.Task] = set()  # fire-and-forget, kept referenced until done
+        self._listeners: list = []            # awaited with each job once it is final
 
     # -- lifecycle ------------------------------------------------------------
     def _stats_key(self, workflow_id: str, checkpoint: str) -> str:
@@ -285,6 +288,7 @@ class QueueManager:
                 workflow_id=r["workflow_id"],
                 params=json.loads(r["params_json"]),
                 user_id=r["user_id"],
+                turn_id=r["turn_id"],
                 id=r["id"],
                 created_at=r["created_at"],
             )
@@ -394,8 +398,8 @@ class QueueManager:
 
     # -- submission / cancellation --------------------------------------------
     async def submit(self, workflow: WorkflowInfo, params: dict,
-                     user_id: int | None = None) -> Job:
-        job = Job(workflow_id=workflow.key, params=params, user_id=user_id)
+                     user_id: int | None = None, turn_id: str | None = None) -> Job:
+        job = Job(workflow_id=workflow.key, params=params, user_id=user_id, turn_id=turn_id)
         self._by_id[job.id] = job
         self._pending.append(job)
         await self._persist_job(job)
@@ -429,8 +433,25 @@ class QueueManager:
             job._done.set()
             await self._broadcast()
             await self._emit({"type": "job", "job": job.public()}, owner=job.user_id)
+            await self._notify(job)
             return True
         return False
+
+    # -- listeners ------------------------------------------------------------
+    def add_listener(self, callback) -> None:
+        """`await callback(job)` once each job is final -- completed, failed,
+        or cancelled whether queued or running. The turn engine moves turns
+        along from here."""
+        self._listeners.append(callback)
+
+    async def _notify(self, job: Job) -> None:
+        for cb in list(self._listeners):
+            try:
+                await cb(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- a listener bug must never stop the worker
+                log.exception("job listener failed for %s", job.id)
 
     async def cancel_user(self, user_id: int) -> int:
         """Cancel everything a user has queued or running (a disabled account)."""
@@ -517,6 +538,11 @@ class QueueManager:
         for q, viewer in list(self._subscribers.items()):
             if owner is EVERYONE or viewer is EVERYONE or viewer == owner:
                 self._put(q, event)
+
+    async def emit(self, event: dict, owner: object = EVERYONE) -> None:
+        """Put an event on the one SSE stream, for its owner only. Other parts
+        of the app (the turn engine) share the stream rather than open another."""
+        await self._emit(event, owner)
 
     async def _broadcast(self) -> None:
         snaps: dict[object, dict] = {}
@@ -633,6 +659,7 @@ class QueueManager:
                     job._done.set()
                     await self._emit({"type": "job", "job": job.public()}, owner=job.user_id)
                     await self._broadcast()
+                    await self._notify(job)
 
     async def _run(self, job: Job) -> None:
         workflow = self.reg.require(job.workflow_id)
@@ -723,15 +750,16 @@ class QueueManager:
             ts = now()
             await self.db.execute(
                 "INSERT INTO images (id, user_id, job_id, filename, path, width, height, seed, "
-                "  workflow_id, params_json, favorite, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,0,?)",
+                "  workflow_id, params_json, favorite, turn_id, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)",
                 (image_id, job.user_id, job.id, d.get("filename", ""), path, width, height,
-                 job.params.get("seed"), job.workflow_id, params_json, ts),
+                 job.params.get("seed"), job.workflow_id, params_json, job.turn_id, ts),
             )
             row = {
                 "id": image_id, "job_id": job.id, "width": width, "height": height,
                 "seed": job.params.get("seed"), "workflow_id": job.workflow_id,
                 "params": job.params, "favorite": False, "created_at": ts,
+                "turn_id": job.turn_id,
                 "url": f"/api/images/{image_id}/file",
             }
             job.images.append(row)
@@ -907,8 +935,8 @@ class QueueManager:
             "INSERT INTO jobs (id, workflow_id, user_id, status, prompt_id, queue_position, "
             "  params_json, input_image_path, mask_path, error_text, error_detail, checkpoint, "
             "  steps, created_at, started_at, finished_at, picked_at, occupancy_seconds, "
-            "  gpu_watts_mean, energy_wh, rate_used, cost_usd) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "  gpu_watts_mean, energy_wh, rate_used, cost_usd, turn_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "  status=excluded.status, queue_position=excluded.queue_position, "
             "  error_text=excluded.error_text, error_detail=excluded.error_detail, "
@@ -921,7 +949,7 @@ class QueueManager:
              json.dumps(job.params), None, None, job.error_text, job.error_detail,
              job.checkpoint, job.steps, job.created_at, job.started_at, job.finished_at,
              job.picked_at, job.occupancy_seconds, job.gpu_watts_mean, job.energy_wh,
-             job.rate_used, job.cost_usd),
+             job.rate_used, job.cost_usd, job.turn_id),
         )
 
 

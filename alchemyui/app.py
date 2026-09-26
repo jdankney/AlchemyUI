@@ -31,9 +31,10 @@ from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .faces import FaceRejected, get_analyser, normalise_reference
 from .identity import Principal, get_principal, require_admin
+from .jobs import JobRejected, image_as_upload, record_upload, submit_jobs
 from .queue import QueueManager, get_queue, start_queue, stop_queue
-from .registry import MAX_SEED, Registry, get_registry
-from .storage import UploadRejected, normalise_mask, normalise_upload, save_upload
+from .registry import Registry, get_registry
+from .storage import UploadRejected, normalise_mask, save_upload
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -147,24 +148,10 @@ async def list_workflows(principal: Principal = Depends(get_principal),
 # --------------------------------------------------------------------------- #
 async def _record_upload(db: Database, comfy: ComfyClient, settings: Settings,
                          data: bytes, user_id: int) -> dict:
-    """Normalise an uploaded image, keep our own copy, and put it where
-    ComfyUI's LoadImage can find it."""
     try:
-        png, width, height = normalise_upload(
-            data, settings.upload_max_edge, settings.upload_max_mb)
-    except UploadRejected as e:
+        return await record_upload(db, comfy, settings, data, user_id)
+    except JobRejected as e:
         raise HTTPException(400, str(e))
-
-    upload_id = uuid.uuid4().hex
-    path = save_upload(settings.upload_dir, png, upload_id)
-    comfy_name = await comfy.upload_image(png, f"{upload_id}.png")
-    await db.execute(
-        "INSERT INTO uploads (id, user_id, path, comfy_name, width, height, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (upload_id, user_id, path, comfy_name, width, height, now()),
-    )
-    return {"id": upload_id, "width": width, "height": height,
-            "url": f"/api/uploads/{upload_id}/file"}
 
 
 @app.post("/api/uploads")
@@ -224,10 +211,11 @@ async def reuse_image(image_id: str,
                              (image_id, principal.user_id))
     if row is None:
         raise HTTPException(404, "no such image")
-    path = Path(row["path"])
-    if not path.exists():
+    if not Path(row["path"]).exists():
         raise HTTPException(410, "the file for this image is gone from disk")
-    return await _record_upload(db, comfy, settings, path.read_bytes(), principal.user_id)
+    up = await image_as_upload(db, comfy, settings, row, principal.user_id)
+    return {"id": up["id"], "width": up["width"], "height": up["height"],
+            "url": f"/api/uploads/{up['id']}/file"}
 
 
 @app.get("/api/uploads/{upload_id}/file")
@@ -456,56 +444,17 @@ async def generate(req: GenerateRequest,
     else:
         chosen = reg.checkpoint(workflow.checkpoint)
 
-    params = workflow.resolve(raw, chosen)
-    if not params["prompt"]:
-        raise HTTPException(400, "a prompt is required")
-
-    if "scale_by" in workflow.params:
-        # The chain's output edge is 4 x source x scale_by. Rather than let a
-        # large source OOM the sampler, reduce the scaling to fit -- and record
-        # what was actually used, so the params on the image stay truthful.
-        src_w = params.get("width") or (upload["width"] if upload else 0)
-        src_h = params.get("height") or (upload["height"] if upload else 0)
-        longest = max(src_w, src_h)
-        if longest:
-            ceiling = settings.hq_max_edge / (4 * longest)
-            if params["scale_by"] > ceiling:
-                params["scale_by"] = round(max(0.05, ceiling), 4)
-                log.info("job scale_by reduced to %.4f to hold %dpx from a %dpx source",
-                         params["scale_by"], settings.hq_max_edge, longest)
-            params["hq_output_edge"] = round(4 * longest * params["scale_by"])
-    if workflow.kind == "outpaint" and not any(
-            params.get(f"pad_{s}") for s in ("left", "top", "right", "bottom")):
-        raise HTTPException(400, "choose at least one direction to extend into")
-
-    # Batch generation is n separate jobs, not one graph with batch_size=n:
-    # they queue, report and cancel individually, and a 6GB card cannot hold
-    # a batched SDXL latent anyway.
-    count = max(1, min(req.batch, settings.max_batch))
-    explicit_seed = req.seed is not None
-    jobs = []
-    for i in range(count):
-        p = dict(params)
-        if i and not explicit_seed:
-            p = workflow.resolve({**raw, "seed": None}, chosen)
-        elif i:
-            # An explicit seed still has to vary, or every image is identical.
-            p["seed"] = (p["seed"] + i) % (MAX_SEED + 1)
-            for extra in ("hq_seed", "face_seed"):
-                if extra in p:
-                    p[extra] = p["seed"]
-        job = await qm.submit(workflow, p, principal.user_id)
-        if upload is not None:
-            await db.execute(
-                "UPDATE jobs SET input_image_path = ?, mask_path = ? WHERE id = ?",
-                (upload["path"], upload["mask_path"], job.id),
-            )
-        jobs.append(job)
+    try:
+        jobs = await submit_jobs(qm, db, settings, workflow, raw, chosen, principal.user_id,
+                                 count=req.batch, explicit_seed=req.seed is not None,
+                                 upload=upload)
+    except JobRejected as e:
+        raise HTTPException(400, str(e))
 
     first = jobs[0]
     return {"job_id": first.id, "position": qm.position_of(first.id),
             "params": first.params,
-            "job_ids": [j.id for j in jobs], "batch": count}
+            "job_ids": [j.id for j in jobs], "batch": len(jobs)}
 
 
 @app.post("/api/jobs/{job_id}/cancel")

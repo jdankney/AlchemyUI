@@ -1,0 +1,118 @@
+"""Turning resolved parameters into queued jobs, shared by /api/generate and
+the chat turn engine, so there is one path from "what to run" to the queue.
+
+Also the two ways an image becomes something ComfyUI's LoadImage can read:
+a fresh upload, and a gallery image going back in as a source.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+import uuid
+from pathlib import Path
+
+from .comfy import ComfyClient
+from .config import Settings
+from .db import Database, now
+from .queue import Job, QueueManager
+from .registry import MAX_SEED, CheckpointInfo, WorkflowInfo
+from .storage import UploadRejected, normalise_upload, save_upload
+
+log = logging.getLogger("alchemyui.jobs")
+
+
+class JobRejected(Exception):
+    """The request cannot become a job. The message is shown to the person."""
+
+
+async def record_upload(db: Database, comfy: ComfyClient, settings: Settings,
+                        data: bytes, user_id: int) -> dict:
+    """Normalise an uploaded image, keep our own copy, and put it where
+    ComfyUI's LoadImage can find it."""
+    try:
+        png, width, height = normalise_upload(
+            data, settings.upload_max_edge, settings.upload_max_mb)
+    except UploadRejected as e:
+        raise JobRejected(str(e))
+
+    upload_id = uuid.uuid4().hex
+    path = save_upload(settings.upload_dir, png, upload_id)
+    comfy_name = await comfy.upload_image(png, f"{upload_id}.png")
+    await db.execute(
+        "INSERT INTO uploads (id, user_id, path, comfy_name, width, height, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (upload_id, user_id, path, comfy_name, width, height, now()),
+    )
+    return {"id": upload_id, "width": width, "height": height,
+            "url": f"/api/uploads/{upload_id}/file"}
+
+
+async def image_as_upload(db: Database, comfy: ComfyClient, settings: Settings,
+                          image_row, user_id: int) -> sqlite3.Row:
+    """A gallery image, made editable again.
+
+    The gallery lives in OUTPUT_DIR and ComfyUI's LoadImage can only see its
+    own input/, so an image has to make that trip before it can be enhanced,
+    transformed or extended. Going through the same normalisation as a fresh
+    upload means one code path, and one set of guarantees about size.
+    """
+    path = Path(image_row["path"])
+    if not path.exists():
+        raise JobRejected("the file for that image is gone from disk")
+    up = await record_upload(db, comfy, settings, path.read_bytes(), user_id)
+    return await db.fetch_one("SELECT * FROM uploads WHERE id = ?", (up["id"],))
+
+
+async def submit_jobs(qm: QueueManager, db: Database, settings: Settings,
+                      workflow: WorkflowInfo, raw: dict, checkpoint: CheckpointInfo | None,
+                      user_id: int, *, count: int = 1, explicit_seed: bool = False,
+                      upload=None, turn_id: str | None = None) -> list[Job]:
+    params = workflow.resolve(raw, checkpoint)
+    if not params["prompt"]:
+        raise JobRejected("a prompt is required")
+
+    if "scale_by" in workflow.params:
+        # The chain's output edge is 4 x source x scale_by. Rather than let a
+        # large source OOM the sampler, reduce the scaling to fit -- and record
+        # what was actually used, so the params on the image stay truthful.
+        src_w = params.get("width") or (upload["width"] if upload else 0)
+        src_h = params.get("height") or (upload["height"] if upload else 0)
+        longest = max(src_w, src_h)
+        if longest:
+            ceiling = settings.hq_max_edge / (4 * longest)
+            if params["scale_by"] > ceiling:
+                params["scale_by"] = round(max(0.05, ceiling), 4)
+                log.info("job scale_by reduced to %.4f to hold %dpx from a %dpx source",
+                         params["scale_by"], settings.hq_max_edge, longest)
+            params["hq_output_edge"] = round(4 * longest * params["scale_by"])
+    if workflow.kind == "outpaint" and not any(
+            params.get(f"pad_{s}") for s in ("left", "top", "right", "bottom")):
+        raise JobRejected("choose at least one direction to extend into")
+
+    # Batch generation is n separate jobs, not one graph with batch_size=n:
+    # they queue, report and cancel individually, and a 6GB card cannot hold
+    # a batched SDXL latent anyway.
+    count = max(1, min(count, settings.max_batch))
+    jobs = []
+    for i in range(count):
+        p = dict(params)
+        if i and not explicit_seed:
+            p = workflow.resolve({**raw, "seed": None}, checkpoint)
+            for k in ("scale_by", "hq_output_edge"):
+                if k in params:
+                    p[k] = params[k]
+        elif i:
+            # An explicit seed still has to vary, or every image is identical.
+            p["seed"] = (p["seed"] + i) % (MAX_SEED + 1)
+            for extra in ("hq_seed", "face_seed"):
+                if extra in p:
+                    p[extra] = p["seed"]
+        job = await qm.submit(workflow, p, user_id, turn_id=turn_id)
+        if upload is not None:
+            await db.execute(
+                "UPDATE jobs SET input_image_path = ?, mask_path = ? WHERE id = ?",
+                (upload["path"], upload["mask_path"], job.id),
+            )
+        jobs.append(job)
+    return jobs
