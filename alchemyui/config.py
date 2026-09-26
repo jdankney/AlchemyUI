@@ -121,8 +121,31 @@ class Settings(BaseSettings):
     queue_reorder_window: int = 6
     queue_max_skips: int = 3
 
-    # Batch generation runs n separate jobs, sequentially.
-    max_batch: int = 8
+    # Batch generation runs n separate jobs, sequentially. Also the most
+    # images one chat turn may ask for ("give me 4 variations").
+    max_batch: int = 4
+
+    # --- router (v2 / Phase 7) ----------------------------------------------
+    # Primary: Llamacracy's /v1 with the `alchemyui` account's key; an empty
+    # URL or model disables it. Fallback: the local CPU-only llama-server
+    # (the alchemyui-router unit); an empty URL disables it.
+    router_primary_url: str = ""
+    router_primary_key: str = ""
+    router_primary_model: str = ""
+    router_primary_concurrency: int = 2
+    router_fallback_url: str = "http://127.0.0.1:8081/v1"
+    router_fallback_model: str = "gemma4-e4b"
+    router_fallback_concurrency: int = 1
+    # Read by the alchemyui-router unit, not by the app: where the model is.
+    router_fallback_gguf: str = ""
+    router_fallback_mmproj: str = ""
+    router_fallback_port: int = 8081
+    # Llamacracy queues us like any user and may have to wake the model first.
+    router_timeout_s: float = 45.0
+    # CPU prompt processing of an image is slow; this is a fallback, not a race.
+    router_fallback_timeout_s: float = 240.0
+    router_context_turns: int = 6
+    router_thumb_edge: int = 768
 
     # ----------------------------------------------------------------------
     @property

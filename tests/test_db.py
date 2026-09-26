@@ -86,3 +86,28 @@ def test_reopening_is_idempotent(tmp_db_path):
     Database(tmp_db_path).close()
     db = Database(tmp_db_path)
     assert [tuple(r) for r in db._conn.execute("SELECT name FROM presets")] == [("portrait",)]
+
+
+# --- Phase 7 ---------------------------------------------------------------
+def test_threads_and_turns_exist(tmp_db_path):
+    db = Database(tmp_db_path)
+    assert {"thread_id", "user_id", "seq", "text", "attachments_json", "state", "plan_json",
+            "plan_source", "plan_error", "question_json", "answers_json", "reply", "router_ms",
+            "prompt_tokens", "completion_tokens", "created_at", "planned_at",
+            "finished_at"} <= _cols(db, "turns")
+    assert {"id", "user_id", "title", "created_at", "updated_at", "deleted"} <= _cols(db, "threads")
+    db.close()
+
+
+def test_phase7_columns_migrate_onto_an_older_db(tmp_db_path):
+    """An older database gains turn_id and is_likeness, and its existing
+    reference faces become the owner's saved likeness."""
+    c = sqlite3.connect(tmp_db_path)
+    c.executescript(V1_SCHEMA)
+    c.execute("INSERT INTO refs VALUES ('r1', 'p', 'c', '', 768, 768, 1, 0.9, 200, 1)")
+    c.commit()
+    c.close()
+    db = Database(tmp_db_path)
+    assert db._conn.execute("SELECT is_likeness FROM refs WHERE id='r1'").fetchone()[0] == 1
+    assert "turn_id" in _cols(db, "jobs") and "turn_id" in _cols(db, "images")
+    db.close()

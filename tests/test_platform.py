@@ -108,7 +108,8 @@ def test_an_explicit_seed_still_varies_across_a_batch(client):
 def test_batch_is_capped(client):
     body = client.post("/api/generate", json={
         "workflow_id": "txt2img-sdxl", "prompt": "x", "batch": 99}).json()
-    assert len(body["job_ids"]) == 8
+    from alchemyui.config import get_settings
+    assert len(body["job_ids"]) == get_settings().max_batch == 4   # spec: MAX_BATCH 4
 
 
 # --- favourites and tags -----------------------------------------------------

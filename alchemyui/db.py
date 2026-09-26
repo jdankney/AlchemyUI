@@ -34,6 +34,11 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE images ADD COLUMN user_id INTEGER REFERENCES users(id)",
     "ALTER TABLE uploads ADD COLUMN user_id INTEGER REFERENCES users(id)",
     "ALTER TABLE refs ADD COLUMN user_id INTEGER REFERENCES users(id)",
+    # v2 / Phase 7: turns own jobs and images; reference faces become the
+    # saved likeness. DEFAULT 1 is deliberate: every v1 reference was one.
+    "ALTER TABLE jobs ADD COLUMN turn_id TEXT",
+    "ALTER TABLE images ADD COLUMN turn_id TEXT",
+    "ALTER TABLE refs ADD COLUMN is_likeness INTEGER NOT NULL DEFAULT 1",
 ]
 
 # Indexes on migrated columns run AFTER the ALTERs: schema.sql is applied
@@ -44,6 +49,8 @@ _INDEXES: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_images_user_created ON images(user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS ix_uploads_user ON uploads(user_id)",
     "CREATE INDEX IF NOT EXISTS ix_refs_user ON refs(user_id, created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_jobs_turn ON jobs(turn_id)",
+    "CREATE INDEX IF NOT EXISTS ix_images_turn ON images(turn_id, created_at)",
 ]
 
 

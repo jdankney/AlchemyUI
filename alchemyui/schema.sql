@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     energy_wh         REAL,                   -- (gpu + NON_GPU_LOAD_WATTS) x occupancy
     rate_used         REAL,                   -- $/kWh in effect when it ran; frozen
     cost_usd          REAL,                   -- frozen at finalisation, never recomputed
+    turn_id           TEXT,                   -- the chat turn that asked for it (NULL: /api/generate)
     created_at        REAL NOT NULL,
     started_at        REAL,
     finished_at       REAL
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS images (
     params_json  TEXT NOT NULL,
     favorite     INTEGER NOT NULL DEFAULT 0,
     tags         TEXT NOT NULL DEFAULT '',   -- comma-separated, lowercase, for filtering
+    turn_id      TEXT,                       -- the turn that made it: t<seq>.<n> is counted from here
     created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_images_created ON images(created_at DESC);
@@ -103,6 +105,9 @@ CREATE TABLE IF NOT EXISTS refs (
     faces_found  INTEGER NOT NULL DEFAULT 1,   -- more than one means we took the largest
     face_score   REAL,                          -- detector confidence, for the UI
     face_px      INTEGER,                       -- how big the face was in the original
+    -- 1: part of the owner's saved likeness (settings, the `me` handle).
+    -- 0: a face taken from one turn's attachment, used for that turn only.
+    is_likeness  INTEGER NOT NULL DEFAULT 1,
     created_at   REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_refs_created ON refs(created_at DESC);
@@ -139,6 +144,45 @@ CREATE TABLE IF NOT EXISTS runtime_state (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- v2 / Phase 7: conversations. A thread is a list of turns; a turn is one
+-- message and everything it caused. Threads are the history now.
+CREATE TABLE IF NOT EXISTS threads (
+    id          TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL REFERENCES users(id),
+    title       TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL,
+    deleted     INTEGER NOT NULL DEFAULT 0   -- hidden from the rail; its images stay in the library
+);
+CREATE INDEX IF NOT EXISTS ix_threads_user ON threads(user_id, deleted, updated_at DESC);
+
+-- planning -> needs_input | queued -> done | failed | cancelled. The spec's
+-- `submitted` and `ready` are instants rather than resting states, and
+-- `running` lives on the jobs.
+CREATE TABLE IF NOT EXISTS turns (
+    id                TEXT PRIMARY KEY,
+    thread_id         TEXT NOT NULL REFERENCES threads(id),
+    user_id           INTEGER NOT NULL REFERENCES users(id),
+    seq               INTEGER NOT NULL,        -- per-thread ordinal: the "4" in t4.2
+    text              TEXT NOT NULL DEFAULT '',
+    attachments_json  TEXT NOT NULL DEFAULT '[]',   -- upload ids, in a1..a4 order
+    state             TEXT NOT NULL,
+    plan_json         TEXT,                    -- {"plan": ..., "compiled": ..., "chip": ...}
+    plan_source       TEXT,                    -- primary | fallback | default
+    plan_error        TEXT,                    -- why a backend was skipped or a plan rejected
+    question_json     TEXT,                    -- {"question": str, "options": [{"label", "plan"}]}
+    answers_json      TEXT NOT NULL DEFAULT '[]',   -- [{"question", "answer"}], replayed to the router
+    reply             TEXT,                    -- words shown under the chip (select, ask, failures)
+    router_ms         INTEGER,
+    prompt_tokens     INTEGER,
+    completion_tokens INTEGER,
+    created_at        REAL NOT NULL,
+    planned_at        REAL,
+    finished_at       REAL,
+    UNIQUE (thread_id, seq)
+);
+CREATE INDEX IF NOT EXISTS ix_turns_state ON turns(state);
 
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
