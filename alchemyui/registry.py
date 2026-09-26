@@ -139,7 +139,9 @@ _KINDS = ("txt2img", "img2img", "inpaint", "outpaint", "enhance", "likeness")
 
 # What a checkpoint is good for. The model policy chooses on these, never on
 # a filename; a trait not in this set is a typo, and fails the boot.
-KNOWN_TRAITS = frozenset({"fast", "quality", "photoreal", "inpaint"})
+# `draft`: the few-step Hyper models -- quick, but they watermark their output
+# (measured in Phase 6), so `fast` never picks them.
+KNOWN_TRAITS = frozenset({"fast", "quality", "photoreal", "inpaint", "draft"})
 
 
 @dataclass(frozen=True)

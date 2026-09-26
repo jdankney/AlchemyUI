@@ -19,7 +19,7 @@ def test_every_checkpoint_is_named_by_its_family_folder():
 
 def test_every_checkpoint_has_known_traits():
     for c in REG.all_checkpoints():
-        assert set(c.traits) <= {"fast", "quality", "photoreal", "inpaint"}, c.name
+        assert set(c.traits) <= {"fast", "quality", "photoreal", "inpaint", "draft"}, c.name
         assert ("inpaint" in c.traits) == (c.family == "sd15-inpaint"), c.name
 
 
@@ -47,3 +47,12 @@ def test_a_v1_bare_filename_still_resolves():
     assert c is not None and c.name == "SD1.5/epicrealism_naturalSinRC1VAE.safetensors"
     w = REG.require("txt2img-sdxl")
     assert w.resolve({"prompt": "x"}, c)["checkpoint"] == c.name
+
+
+def test_hyper_is_a_draft_model_and_rv6_is_the_fast_one():
+    """Phase 6 measured Hyper watermarking its output; `fast` means RV 6.0."""
+    for c in REG.all_checkpoints():
+        if "Hyper" in c.name:
+            assert "draft" in c.traits and "fast" not in c.traits, c.name
+    fast = [c.name for c in REG.all_checkpoints() if "fast" in c.traits]
+    assert fast[0] == "SD1.5/realisticVisionV60B1_v60B1VAE_pruned_fp16.safetensors"

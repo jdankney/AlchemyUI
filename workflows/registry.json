@@ -56,7 +56,7 @@
       "label": "Realistic Vision Hyper",
       "family": "sd15",
       "traits": [
-        "fast",
+        "draft",
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5 in six steps. The fastest good model here.",
@@ -97,6 +97,7 @@
       "label": "Realistic Vision 6.0",
       "family": "sd15",
       "traits": [
+        "fast",
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5, full step count.",
@@ -135,6 +136,7 @@
       "label": "epiCRealism",
       "family": "sd15",
       "traits": [
+        "fast",
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5. About four times faster than SDXL.",
@@ -249,7 +251,7 @@
       "family": "sd15-inpaint",
       "traits": [
         "inpaint",
-        "fast"
+        "draft"
       ],
       "blurb": "The inpainting UNet in six steps.",
       "aspects": {
