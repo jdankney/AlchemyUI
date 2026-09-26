@@ -92,12 +92,12 @@ systemctl --user daemon-reload
 
 if grep -q 'REPLACE_' "$AUTH_ENV"; then
   warn "deploy/oauth2-proxy.env still has REPLACE_ placeholders -- the auth edge stays off."
-  warn "  re-run with ALCHEMYUI_DEX_FQDN=<dex-server's NetBird FQDN> ./deploy/install.sh,"
+  warn "  re-run with ALCHEMYUI_DEX_FQDN=gpu-server.netbird.example ./deploy/install.sh,"
   warn "  or edit them by hand, then re-run."
 else
   secret="$(grep '^OAUTH2_PROXY_CLIENT_SECRET=' "$AUTH_ENV" | cut -d= -f2-)"
   redirect="$(grep '^OAUTH2_PROXY_REDIRECT_URL=' "$AUTH_ENV" | cut -d= -f2-)"
-  say "register AlchemyUI in Llamacracy's Dex (deploy/dex/config.yaml on dex-server),"
+  say "register AlchemyUI in Llamacracy's Dex (deploy/dex/config.yaml on gpu-server),"
   say "under staticClients, then restart Dex there:"
   cat <<EOF
 

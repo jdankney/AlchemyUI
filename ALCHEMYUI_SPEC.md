@@ -122,7 +122,7 @@ registry that uses bare filenames will not find them.
   references), any segmentation model, and any ControlNet.
 
 **LLMs**
-- **Llamacracy**, on `dex-server` over NetBird (GTX 1080 Ti, 11GB, shared
+- **Llamacracy**, on `gpu-server` over NetBird (GTX 1080 Ti, 11GB, shared
   with its own users). It serves Qwen3.6-35B-A3B, Gemma4-26B-A4B, Gemma4-E4B
   and others.
   - `/v1/chat/completions` is a **raw passthrough** to llama-server. It
@@ -132,6 +132,16 @@ registry that uses bare filenames will not find them.
   - Llamacracy does not persist `/v1` traffic.
   - `/v1` does not say which model is resident, so a router request for a
     model that isn't loaded will trigger a swap on that box.
+  - **Verified 2026-09-25** with the `alchemyui` account's key, from the
+    laptop:
+    - `http://gpu-server.netbird.example/v1` and `http://llamacracy.example/v1`
+      both answer in about 0.1s.
+    - `response_format: json_schema` is **enforced**: a model explicitly told
+      to ignore the format and reply in prose still returned schema-valid JSON
+      (1.3s on `qwen35-4b`).
+    - **Not every model can see images.** `qwen35-4b` rejects image input
+      because no mmproj is configured for it, so the primary router model must
+      be one that has one.
 - **Local fallback:** `~/models/Gemma4-E4B-QAT-UD-Q4_K_XL/`, the GGUF at
   4.2GB plus `mmproj-BF16.gguf`, run **CPU-only** on this laptop.
 
@@ -154,7 +164,7 @@ A checkpoint swap costs 30s+, cold.
 ```
  browser ─► oauth2-proxy ─► AlchemyUI :8300 ──WS+HTTP──► ComfyUI :8188 (loopback)
             (Dex client on    │   │
-             dex-server)    │   ├─ planner ─► Llamacracy /v1 (dex-server)
+             gpu-server)      │   ├─ planner ─► Llamacracy /v1 (gpu-server)
                               │   │             └► fallback: llama-server :8081, CPU-only
                               │   ├─ search ──► SearXNG                (Phase 9)
                               │   └─ meter ───► nvidia-smi
@@ -323,8 +333,8 @@ the user's own words; the rewritten prompt sits behind the plan chip.
   - It stays resident in about 5GB of RAM.
   - It runs as its own systemd user unit, `alchemyui-router`.
 - **Constrained decoding:** `response_format: {type: json_schema, …}`, which
-  llama-server enforces as a grammar. Before depending on it, verify it
-  survives Llamacracy's passthrough with the real server.
+  llama-server enforces as a grammar. It survives Llamacracy's passthrough
+  (verified, §3).
 - **Thinking off:** it adds latency and nothing to a classification.
 - **Concurrency:** planning is capped per backend: 2 for Llamacracy, 1 for the
   CPU fallback.
@@ -579,7 +589,7 @@ The v1 UI keeps working throughout, now scoped per user.
 ### Phase 9 — Web references
 
 - SearXNG image search. Llamacracy's instance listens on loopback on
-  `dex-server`, so the first task is deciding how the laptop reaches it
+  `gpu-server`, so the first task is deciding how the laptop reaches it
   (expose it on NetBird, or run its own).
 - An **SSRF-safe fetcher**: public addresses only, re-checked on every
   redirect; size and time caps; content sniffed, decoded with Pillow and

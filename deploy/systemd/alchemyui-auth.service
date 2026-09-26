@@ -2,7 +2,7 @@
 # which replaces @REPO@ with the absolute path of this checkout)
 # oauth2-proxy: AlchemyUI's auth edge. Binds this laptop's NetBird interface
 # (wt0, discovered at start) on :4180, authenticates against Llamacracy's Dex
-# on dex-server, and forwards X-Forwarded-{User,Email,Preferred-Username} to
+# on gpu-server, and forwards X-Forwarded-{User,Email,Preferred-Username} to
 # the app on 127.0.0.1. Adapted from Llamacracy's llamacracy-auth.service.
 [Unit]
 Description=AlchemyUI auth edge (oauth2-proxy on wt0)

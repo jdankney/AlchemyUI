@@ -210,7 +210,7 @@ What building and running the multi-user platform added to the design above.
 - **The installer ships unexecuted.** It enables linger, downloads
   oauth2-proxy and writes systemd units. It is syntax-checked, and the control
   script it installs was exercised, but registering AlchemyUI in Dex is a
-  change on dex-server: the installer prints the exact `staticClients`
+  change on gpu-server: the installer prints the exact `staticClients`
   entry rather than making it.
 
 ## Architecture
