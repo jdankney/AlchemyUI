@@ -221,13 +221,23 @@ class ChatEngine:
             "chip": plan.get("chip") if plan else None,
             "plan": plan.get("plan") if plan else None,
             "compiled": plan.get("compiled") if plan else None,
+            "model": self._model_label(plan),
             "plan_source": row["plan_source"], "plan_error": row["plan_error"],
             "reply": row["reply"], "question": question,
             "answers": json.loads(row["answers_json"] or "[]"),
             "router_ms": row["router_ms"], "jobs": jobs, "images": images,
             "created_at": row["created_at"], "planned_at": row["planned_at"],
             "finished_at": row["finished_at"],
+            # When this snapshot was taken. The browser gets a turn both from
+            # the POST that made it and from the event stream, in either
+            # order; the newer snapshot wins.
+            "at": now(),
         }
+
+    def _model_label(self, plan: dict | None) -> str | None:
+        name = ((plan or {}).get("compiled") or {}).get("checkpoint")
+        ck = self.reg.checkpoint(name) if name else None
+        return ck.label if ck else name
 
     async def _emit(self, turn_id: str) -> None:
         row = await self._row(turn_id)

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [BASE, SCRIPT] = process.argv.slice(2);
+const [BASE, SCRIPT, HASH = ''] = process.argv.slice(2);
 const byId = new Map();
 const requests = [];
 let error = null;
@@ -44,7 +44,9 @@ globalThis.document = {
   activeElement: null, hidden: false, visibilityState: 'visible', title: '',
 };
 globalThis.window = globalThis;
-globalThis.location = { href: BASE + '/', origin: BASE, pathname: '/', search: '', hash: '', reload() {} };
+globalThis.location = { href: BASE + '/' + HASH, origin: BASE, pathname: '/', search: '', hash: HASH, reload() {} };
+globalThis.innerWidth = 1280;
+globalThis.innerHeight = 800;
 globalThis.history = { replaceState() {}, pushState() {} };
 Object.defineProperty(globalThis, 'navigator', {
   value: { maxTouchPoints: 0, userAgent: 'node', clipboard: { writeText: async () => {} } },

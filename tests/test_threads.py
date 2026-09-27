@@ -41,6 +41,7 @@ async def test_text_turn_plans_queues_and_finishes(engine_harness):
     assert [i["handle"] for i in done["images"]] == ["t1.1", "t1.2"]
     assert done["chip"] == "Generating 2 · Realistic Vision 6.0 · 1:1"
     assert done["plan_source"] == "primary" and done["router_ms"] == 900
+    assert done["model"] == "Realistic Vision 6.0"
     row = await h.row(t["id"])
     assert (row["prompt_tokens"], row["completion_tokens"]) == (120, 40)
     threads = await h.engine.list_threads(h.alice)
