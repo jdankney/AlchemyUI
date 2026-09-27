@@ -7,6 +7,7 @@ a fresh upload, and a gallery image going back in as a source.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import uuid
@@ -20,6 +21,33 @@ from .registry import MAX_SEED, CheckpointInfo, WorkflowInfo
 from .storage import UploadRejected, normalise_upload, save_upload
 
 log = logging.getLogger("alchemyui.jobs")
+
+
+def image_public(r) -> dict:
+    """An images row as the browser sees it."""
+    return {
+        "id": r["id"], "job_id": r["job_id"], "width": r["width"], "height": r["height"],
+        "seed": r["seed"], "workflow_id": r["workflow_id"],
+        "params": json.loads(r["params_json"]), "favorite": bool(r["favorite"]),
+        "tags": [t for t in (r["tags"] or "").split(",") if t],
+        "turn_id": r["turn_id"],
+        "created_at": r["created_at"], "url": f"/api/images/{r['id']}/file",
+    }
+
+
+def job_public(r) -> dict:
+    """A finished jobs row, shaped like Job.public() so the browser need not
+    care whether the queue still holds it."""
+    return {
+        "id": r["id"], "workflow_id": r["workflow_id"], "turn_id": r["turn_id"],
+        "status": r["status"], "position": None, "eta_s": None,
+        "progress": {"value": 0, "max": 0},
+        "params": json.loads(r["params_json"]),
+        "cold_start": False,
+        "error_text": r["error_text"], "error_detail": r["error_detail"],
+        "images": [], "created_at": r["created_at"],
+        "started_at": r["started_at"], "finished_at": r["finished_at"],
+    }
 
 
 class JobRejected(Exception):

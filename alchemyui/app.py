@@ -31,10 +31,12 @@ from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .faces import FaceRejected, get_analyser, normalise_reference
 from .identity import Principal, get_principal, require_admin
-from .jobs import JobRejected, image_as_upload, record_upload, submit_jobs
+from .jobs import JobRejected, image_as_upload, image_public, job_public, record_upload, submit_jobs
+from .planner.schema import Vocabulary
 from .queue import QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .storage import UploadRejected, normalise_mask, save_upload
+from .threads import build_router, start_engine, stop_engine
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -56,12 +58,16 @@ async def lifespan(app: FastAPI):
 
     Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
-    await start_queue()
+    qm = await start_queue()
+    reg = get_registry()
+    router = build_router(settings, Vocabulary.from_registry(reg, settings.max_batch))
+    await start_engine(get_db(), qm, reg, settings, router, comfy)
     log.info("alchemyui up on %s:%s (dev_mode=%s)",
              settings.app_bind_host, settings.port, settings.is_dev)
     try:
         yield
     finally:
+        await stop_engine()
         await stop_queue()
         await comfy.aclose()
         get_db().close()
@@ -485,16 +491,7 @@ async def list_jobs(limit: int = 50,
         if live is not None:
             jobs.append(live.public(qm.position_of(r["id"]), etas.get(r["id"])))
             continue
-        jobs.append({
-            "id": r["id"], "workflow_id": r["workflow_id"], "status": r["status"],
-            "position": None, "eta_s": None,
-            "progress": {"value": 0, "max": 0},
-            "params": json.loads(r["params_json"]),
-            "cold_start": False,
-            "error_text": r["error_text"], "error_detail": r["error_detail"],
-            "images": [], "created_at": r["created_at"],
-            "started_at": r["started_at"], "finished_at": r["finished_at"],
-        })
+        jobs.append(job_public(r))
     return {"jobs": jobs}
 
 
@@ -519,14 +516,7 @@ async def job_preview(job_id: str,
 # --------------------------------------------------------------------------- #
 # gallery
 # --------------------------------------------------------------------------- #
-def _image_row(r) -> dict:
-    return {
-        "id": r["id"], "job_id": r["job_id"], "width": r["width"], "height": r["height"],
-        "seed": r["seed"], "workflow_id": r["workflow_id"],
-        "params": json.loads(r["params_json"]), "favorite": bool(r["favorite"]),
-        "tags": [t for t in (r["tags"] or "").split(",") if t],
-        "created_at": r["created_at"], "url": f"/api/images/{r['id']}/file",
-    }
+_image_row = image_public
 
 
 def _clean_tags(raw: list[str]) -> str:

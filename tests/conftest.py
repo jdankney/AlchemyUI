@@ -210,6 +210,8 @@ def _wire(monkeypatch, db_path: str, output_dir: str, env: dict) -> tuple[Databa
         monkeypatch.setattr(mod, "get_registry", lambda: reg)
     # no test ever shells out to nvidia-smi
     monkeypatch.setattr(queuemod, "GpuPowerSampler", FixedSampler)
+    # ...and no test ever reaches a real LLM, whatever the developer's .env says
+    monkeypatch.setattr(appmod, "build_router", lambda settings, vocab: FakeRouter())
     appmod.app.dependency_overrides[get_db] = lambda: db
     appmod.app.dependency_overrides[get_comfy] = lambda: comfy
     appmod.app.dependency_overrides[get_registry] = lambda: reg
@@ -222,8 +224,10 @@ def client(tmp_db_path, tmp_output_dir, monkeypatch, request):
     db, comfy = _wire(monkeypatch, tmp_db_path, tmp_output_dir,
                       marker.kwargs if marker else {})
     with TestClient(appmod.app) as c:
+        from alchemyui.threads import get_engine
         c.comfy = comfy
         c.db = db
+        c.router = get_engine().router
         yield c
     appmod.app.dependency_overrides.clear()
     get_settings.cache_clear()
@@ -286,3 +290,83 @@ def wait_for(client, predicate, timeout=10.0):
             return value
         time.sleep(0.02)
     raise AssertionError("timed out waiting for the queue")
+
+
+# --- Phase 7: the turn engine ---------------------------------------------------
+class FakeRouter:
+    """Replays scripted RouteResults and records every RouteRequest. `hold`
+    keeps planning in flight, for tests of what happens meanwhile."""
+
+    def __init__(self):
+        self.results, self.requests, self.hold = [], [], False
+
+    async def route(self, req):
+        self.requests.append(req)
+        while self.hold:
+            await asyncio.sleep(0.01)
+        return self.results.pop(0)
+
+    def status(self):
+        return {"primary": None, "fallback": None}
+
+
+def _png_bytes(size=(64, 64), colour=(120, 90, 200)) -> bytes:
+    import io
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", size, colour).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.fixture
+async def engine_harness(tmp_db_path, tmp_output_dir):
+    """A started QueueManager over FakeComfy plus a ChatEngine over FakeRouter,
+    and two users. Drives the engine directly, below the HTTP layer."""
+    from types import SimpleNamespace
+
+    from alchemyui.config import Settings
+    from alchemyui.jobs import record_upload
+    from alchemyui.queue import QueueManager
+    from alchemyui.threads import ChatEngine
+
+    settings = Settings()
+    for k, v in {"output_dir": tmp_output_dir, "upload_dir": tmp_output_dir + "/uploads",
+                 "job_start_timeout_s": 5.0, "router_context_turns": 6,
+                 "max_batch": 4}.items():
+        object.__setattr__(settings, k, v)
+    db = Database(tmp_db_path)
+    comfy = FakeComfy()
+    reg = load_registry(REPO / "workflows")
+    qm = QueueManager(db, comfy, reg, settings, sampler_factory=FixedSampler)
+    await qm.start()
+    router = FakeRouter()
+    h = SimpleNamespace(qm=qm, comfy=comfy, db=db, router=router, settings=settings)
+    h.engine = ChatEngine(db, qm, reg, settings, router, comfy)
+    await h.engine.start()
+    h.alice = await add_user(db, "alice")
+    h.bob = await add_user(db, "bob")
+
+    async def row(turn_id):
+        return await db.fetch_one("SELECT * FROM turns WHERE id = ?", (turn_id,))
+
+    async def upload(uid, size=(64, 64)):
+        return (await record_upload(db, comfy, settings, _png_bytes(size), uid))["id"]
+
+    async def likeness(uid, n=1):
+        for i in range(n):
+            await db.execute(
+                "INSERT INTO refs (id, user_id, path, comfy_name, width, height, is_likeness, "
+                "  created_at) VALUES (?, ?, 'x', ?, 768, 768, 1, ?)",
+                (f"ref-{uid}-{i}", uid, f"alchemyui/ref-{uid}-{i}.png", i))
+
+    async def restart_engine():
+        qm._listeners.clear()
+        h.engine = ChatEngine(db, qm, reg, settings, router, comfy)
+        await h.engine.start()
+
+    h.row, h.upload, h.likeness, h.restart_engine = row, upload, likeness, restart_engine
+    yield h
+    await h.engine.stop()
+    await qm.stop()
+    db.close()
