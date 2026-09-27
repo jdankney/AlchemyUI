@@ -244,7 +244,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 289 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
+uv run pytest -q          # 290 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
 uv run ruff check .
 ```
 

@@ -69,7 +69,7 @@ these are the reasons.
   `/v1` that passes `response_format` and images through untouched. So the
   router needs nothing new on that side, just an API key.
 - **A fallback that cannot touch the GPU.** Gemma4-E4B on CPU is kept resident
-  in about 5GB of 40GB RAM. `-ngl 0` is not sufficient on a CUDA build of
+  in about 7.5GB of 40GB RAM (measured; the plan said 5GB). `-ngl 0` is not sufficient on a CUDA build of
   llama.cpp: large prompt batches and the vision projector can still be
   offloaded. The unit also sets `CUDA_VISIBLE_DEVICES=` so the GPU is simply
   not there.
@@ -212,6 +212,129 @@ What building and running the multi-user platform added to the design above.
   script it installs was exercised, but registering AlchemyUI in Dex is a
   change on gpu-server: the installer prints the exact `staticClients`
   entry rather than making it.
+
+## Phase 7 — as built
+
+What building the chat and its router added to the design above, and what
+the real models taught it. Built 2026-09-25 to 27.
+
+### The router, measured
+
+`alchemyui router-eval` runs 37 cases (all five spec examples, follow-ups,
+attachments, likeness, and requests we cannot do yet) against each backend
+alone, with no fallback and no default planner to hide a miss.
+
+| Run | Llamacracy `gemma4-e4b-uncensored` | Local `gemma4-e4b` (CPU) |
+|---|---|---|
+| First run, first prompt | 31/37 (84%), median 3.5s | — |
+| After the fixes below | **35/37 (95%), median 3.5s** | **34/37 (92%), median 18.4s** |
+
+- **`ROUTER_PRIMARY_MODEL=gemma4-e4b-uncensored`.** Chosen by the author for
+  its ~4s wake-up and then confirmed by the eval. The bigger models would add
+  swap time on gpu-server for a job that emits ~140 tokens.
+- **Every fix was to a category, never to a fixture.** The first run's misses
+  were all of one of four kinds, and each was fixed in general:
+  - partial-photo edits ("add me into my bed", "remove the dog", "combine
+    these") were routed to whole-image actions: the prompt now names what we
+    cannot do yet, concretely;
+  - "this is me" plus a photo, with no saved likeness, went to `me` and would
+    have asked for a likeness just attached: `me` is now offered only when a
+    likeness exists or nothing is attached;
+  - `select` of an attachment: refused at validation;
+  - a new picture that ignored an attached photo: refused at validation, with
+    asking offered first in the repair message, because the model takes the
+    first remedy it is offered ("put these on me" became a transform of the
+    sweatpants while the edit came first).
+- **The backends now agree on nearly everything.** The fallback's one extra
+  miss is "remove the dog from this", which it turns into a transform.
+- **The two misses left are judgement calls.** "make it darker" after two
+  unpicked variations transforms one instead of asking which; a wrong guess
+  costs a cancel, which spec §6 accepts. "put me on a beach at sunset"
+  generates a stranger on a beach rather than your likeness.
+
+### Things only the real models showed
+
+- **Llamacracy's models cannot see, today.** Its model table says E4B and the
+  26B read photos, but both answer `image input is not supported`: the
+  llama-server instances on gpu-server launch without `--mmproj`. So "cannot
+  see" is its own failure kind, not an outage. Turns without images keep using
+  Llamacracy, and turns with images go to the local fallback, which has its
+  projector. If the fallback is down too, Llamacracy plans them blind, with
+  the attachments described. That is how the primary scored 95% above: blind
+  on every attachment case. When gpu-server gains its mmproj, nothing here
+  changes.
+- **`enable_thinking: false` is not enough.** With an assistant turn in the
+  history, which every repair retry has, the uncensored E4B reasoned anyway:
+  ~250 hidden tokens before the plan, overrunning the token cap. Live, "give
+  me 2 variations of it" took 47s and landed on the backup.
+  `thinking_budget_tokens: 0` stops it; `reasoning_budget` is silently
+  ignored.
+- **Temperature 0.** "put me on a beach at sunset" flipped between likeness
+  and generate across runs at 0.2. Routing is classification: the same
+  message should plan the same way twice.
+- **Replaying the bad plan works better than describing it.** A repair that
+  shows the model its own rejected JSON, then the reason, fixed "generate
+  with a source" both times; the same reason folded into a fresh message
+  failed both times.
+- **The CPU fallback is slower and bigger than the spec guessed:** 7.4GB
+  resident (the BF16 projector and an 8K context), ~20 tokens/s prompt
+  processing and ~7.7 tokens/s generation, so a plan takes 15-35s, and a turn
+  with two images up to a minute. Hence its own 240s timeout.
+  `CUDA_VISIBLE_DEVICES=` was confirmed working: llama-server logs "no
+  CUDA-capable device is detected".
+
+### Design choices made while building
+
+- **`select` joined the vocabulary.** "use the second one" asks for nothing
+  to be made; without an action for it, example 5's middle step had no honest
+  route.
+- **Handles are enumerated per call, not just validated after.** `source` and
+  `faces` in the schema are enums of the handles that exist in *this user's*
+  scope for *this turn*, so constrained decoding cannot produce one that fails
+  to resolve. The engine still resolves every handle itself (hard rule 3).
+- **Stored turn states are the resting ones:** `planning`, `needs_input`,
+  `queued`, `done`, `failed`, `cancelled`. `running` lives on the jobs.
+- **One lock orders every turn transition**, so a fast job cannot settle its
+  turn while the turn's later jobs are still being submitted. It is never
+  held across the queue's `cancel()`, whose listener takes it too.
+- **An answer to a no-LLM question runs its plan directly.** When both LLMs
+  are down, an image gets "restyle, enhance or extend?" as buttons that carry
+  finished plans, so picking one needs no model.
+- **A turn reaches the browser twice, in either order**: from the POST that
+  made it and from the event stream. Each snapshot carries its server time
+  and the newest wins. Found by driving the page in a real browser: a turn
+  that failed before its POST returned stayed "planning" on screen.
+- **The fixture photos were generated here, with RV 6.0**, so the eval set
+  is committed without anyone's real photos in it.
+
+### Live acceptance (2026-09-27)
+
+Real ComfyUI, real Llamacracy, the local fallback started by hand, on a
+scratch database, as a test identity through oauth2-proxy's headers.
+
+| Message | Planned by | Result | Wall time |
+|---|---|---|---|
+| "Generate me a photo of a spooky lighthouse at night" | Llamacracy, 7.6s (cold) | generate, RV 6.0, 4:3 | 37s |
+| "Snowy Forest during Snowstorm" | Llamacracy, 3.7s | generate, RV 6.0, 16:9 | 34s |
+| "make it darker" | Llamacracy, 3.9s | transform of t1.1 | 34s |
+| "give me 2 variations of it with a stormy sea" | backup, after the repair loop above | 2 transforms of t2.1 | 117s |
+| "use the second one" | Llamacracy, 2.8s | select t3.2, nothing queued | 3s |
+| "now add a dog" | Llamacracy, 5.5s | an honest question, with alternatives | 6s |
+| *[me, my bed]* "Edit this photo of my bed to add me in it…" | backup (Llamacracy cannot see), 34.9s | an honest question: a new picture of you in a bedroom, or restyle | 36s |
+| "Me as an astronaut" (likeness saved first, face found at 0.83) | Llamacracy, 3.8s | likeness on RealVis XL with the saved face | 157s |
+| Llamacracy unreachable: "Snowy Forest…", *[beach]* "oil painting" | backup, 17-23s | generate; transform of a1; chip says "backup planner" | 47s, 33s |
+| Both down: "Snowy Forest…" | nobody | your words as the prompt; chip says "planner offline" | 16s |
+| Both down: *[beach]* "make this look like an oil painting" | nobody | "Restyle / Enhance / Make it wider?" as buttons carrying plans | 1s |
+
+The admin page's fallback list showed each of those turns with its owner and
+reason ("primary unreachable"), and none of their words. The backup once
+embellished "Snowy Forest during Snowstorm" with "a person standing in"; a
+small model's liberty, and the chip's details show the prompt it wrote.
+
+Driving the page itself was done in headless Chromium against the real app
+with a scripted ComfyUI and router: every view, desktop and phone widths,
+the drawer, a real send, images arriving over the event stream. It is what
+found the POST/stream race above.
 
 ## Architecture
 
