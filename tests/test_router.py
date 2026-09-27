@@ -63,6 +63,15 @@ async def test_client_classifies_failures(response, kind):
     assert c.status()["ok"] is (kind == "no_vision")
 
 
+async def test_a_plan_cut_off_by_the_token_cap_is_bad_output():
+    body = {"choices": [{"message": {"content": '{"action": "gen'}, "finish_reason": "length"}]}
+    c = LLMClient("p", "http://llm/v1", "m",
+                  transport=httpx.MockTransport(lambda r: httpx.Response(200, json=body)))
+    with pytest.raises(LLMError, match="ran out of tokens") as e:
+        await c.complete([], {})
+    assert e.value.kind == "bad_output" and c.status()["ok"] is True
+
+
 async def test_client_connect_failure_is_unreachable():
     def boom(req):
         raise httpx.ConnectError("refused")
@@ -136,7 +145,7 @@ class Scripted:
     def __init__(self, name, *script):
         self.name, self.script, self.calls = name, list(script), []
 
-    async def complete(self, messages, schema, max_tokens=700):
+    async def complete(self, messages, schema, max_tokens=400):
         self.calls.append(messages)
         step = self.script.pop(0)
         if isinstance(step, Exception):

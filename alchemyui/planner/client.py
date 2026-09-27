@@ -62,7 +62,10 @@ class LLMClient:
                 "error": self._error, "at": self._at}
 
     async def complete(self, messages: list[dict], schema: dict,
-                       max_tokens: int = 700) -> LLMReply:
+                       max_tokens: int = 400) -> LLMReply:
+        """A plan is ~150 tokens. The cap exists for the failure where a model
+        loops inside the grammar (router-eval saw ~20s of whitespace-and-
+        nothing on a repair), so it should fail fast rather than finish."""
         body = {
             "model": self.model, "messages": messages, "temperature": 0.0,
             # Temperature 0: routing is a classification, and the same message
@@ -98,8 +101,12 @@ class LLMClient:
             raise LLMError(kind, f"{self.name}: HTTP {r.status_code}: {text}")
         try:
             d = r.json()
-            content = d["choices"][0]["message"]["content"] or ""
+            choice = d["choices"][0]
+            content = choice["message"]["content"] or ""
             usage = d.get("usage") or {}
+            if choice.get("finish_reason") == "length":
+                self._mark(True)
+                raise LLMError("bad_output", f"{self.name} ran out of tokens mid-plan")
         except (ValueError, KeyError, IndexError, TypeError) as e:
             self._mark(False, "malformed response")
             raise LLMError("bad_output", f"{self.name}: malformed response") from e

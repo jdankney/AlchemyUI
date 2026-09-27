@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
     e = sub.add_parser("router-eval", help="score the router's LLM backends on the fixture set")
     e.add_argument("--backend", choices=("primary", "fallback", "both"), default="both")
-    e.add_argument("--only", metavar="CASE_ID", help="run one case")
+    e.add_argument("--only", metavar="IDS", help="run only these cases (comma-separated ids)")
     e.add_argument("--out", metavar="DIR", help="where to write the report (default data/router-eval)")
     e.set_defaults(func=lambda a: __import__("alchemyui.evals", fromlist=["run_cli"]).run_cli(
         a.backend, a.only, a.out))

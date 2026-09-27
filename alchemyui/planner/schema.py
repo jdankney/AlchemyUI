@@ -165,8 +165,13 @@ def validate_plan(raw: str | dict, vocab: Vocabulary, sources: list[str],
     if action in ("generate", "likeness"):
         unused = [h for h in sources if h.startswith("a") and h != face]
         if unused:
-            raise PlanInvalid(f"{action} would ignore the attached {', '.join(unused)}; use it as the "
-                              "source of an edit, or ask what they want done with it")
+            # Ask comes first: the model follows the first remedy offered, and
+            # an attachment we cannot use as a reference is a question, not an
+            # edit of that photo (router-eval: "put these on me" became a
+            # transform of the sweatpants when the edit was offered first).
+            raise PlanInvalid(f"{action} would ignore the attached {', '.join(unused)}. We cannot "
+                              "use a photo as a reference yet, so ask what they want; only if they "
+                              "want that photo itself changed, make it the source of an edit")
     strength = s("strength") if s("strength") in STRENGTHS else "medium"
     quality = s("quality") if s("quality") in QUALITIES else "fast"
     try:

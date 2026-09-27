@@ -133,7 +133,8 @@ def run_cli(backend: str, only: str | None, out_dir: str | None) -> int:
     if not clients:
         print(f"no {backend} backend is configured (ROUTER_PRIMARY_URL/MODEL, ROUTER_FALLBACK_URL)")
         return 1
-    cases = [c for c in load_cases() if not only or c["id"] == only]
+    wanted = set((only or "").split(",")) - {""}
+    cases = [c for c in load_cases() if not wanted or c["id"] in wanted]
 
     def progress(name, case, row):
         mark = "ok  " if row["ok"] else "MISS"
