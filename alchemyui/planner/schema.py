@@ -27,6 +27,15 @@ MAX_NEGATIVE = 240
 MAX_QUESTION = 240
 
 
+def face_handles(has_likeness: bool, attachments: list[str]) -> list[str]:
+    """Who a likeness may be of. `me` means the requester's saved likeness and
+    nobody else's. With none saved it can only become "save one first" --
+    worth offering when nothing is attached, but not when an attachment is
+    very likely the face they mean (router-eval: "this is me, make me a
+    knight" went to `me` and asked for a likeness they had just attached)."""
+    return (["me"] if has_likeness or not attachments else []) + list(attachments)
+
+
 class PlanInvalid(Exception):
     """A plan that parsed but does not hold together. The message is fed back
     to the model verbatim on the repair retry, so it says what to change."""
@@ -127,6 +136,9 @@ def validate_plan(raw: str | dict, vocab: Vocabulary, sources: list[str],
     if action in NEEDS_SOURCE and not source:
         raise PlanInvalid(f"{action} needs a source image; set source to one of "
                           f"{', '.join(sources) or '(none -- use ask instead)'}")
+    if action == "select" and source.startswith("a"):
+        raise PlanInvalid("select picks an earlier image to keep working from; for an attached "
+                          "image, choose what to do with it, or ask")
     if action == "generate" and source:
         raise PlanInvalid("generate makes a new image from words only; to change an "
                           "existing image use transform, enhance or extend with that source")

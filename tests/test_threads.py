@@ -276,3 +276,11 @@ async def test_empty_and_oversized_messages_are_refused(engine_harness):
     ups = [await h.upload(h.alice) for _ in range(5)]
     with pytest.raises(TurnError, match="at most 4"):
         await h.engine.create_turn(h.alice, "x", ups)
+
+
+async def test_a_face_attachment_is_offered_instead_of_an_empty_likeness(engine_harness):
+    h = engine_harness
+    up = await h.upload(h.alice)
+    h.router.results = [RouteResult(P(action="ask", question="?"), "primary")]
+    await settle(h, (await h.engine.create_turn(h.alice, "this is me, make me a knight", [up]))["id"])
+    assert h.router.requests[0].faces == ["a1"]

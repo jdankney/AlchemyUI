@@ -11,6 +11,7 @@ startup error instead, and it runs on every boot as well as from here.
                                 classes are installed and the checkpoints exist
     alchemyui reassign FROM TO  move every image, job, upload, reference and
                                 preset from one account (by email) to another
+    alchemyui router-eval       score the router's backends on evals/router
 """
 
 from __future__ import annotations
@@ -158,6 +159,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("src", metavar="FROM")
     r.add_argument("dst", metavar="TO")
     r.set_defaults(func=cmd_reassign)
+
+    e = sub.add_parser("router-eval", help="score the router's LLM backends on the fixture set")
+    e.add_argument("--backend", choices=("primary", "fallback", "both"), default="both")
+    e.add_argument("--only", metavar="CASE_ID", help="run one case")
+    e.add_argument("--out", metavar="DIR", help="where to write the report (default data/router-eval)")
+    e.set_defaults(func=lambda a: __import__("alchemyui.evals", fromlist=["run_cli"]).run_cli(
+        a.backend, a.only, a.out))
 
     args = parser.parse_args(argv)
     return args.func(args)

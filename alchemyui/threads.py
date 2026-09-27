@@ -36,7 +36,7 @@ from .planner.client import LLMClient
 from .planner.policy import NeedsInput, PolicyContext, compile_plan
 from .planner.prompt import Attachment, thumbnail
 from .planner.router import Router, RouteRequest
-from .planner.schema import Plan, Vocabulary
+from .planner.schema import Plan, Vocabulary, face_handles
 from .queue import TERMINAL, JobState, QueueManager
 from .registry import Registry
 from .storage import save_upload
@@ -83,10 +83,7 @@ class Scope:
 
     @property
     def faces(self) -> list[str]:
-        # `me` is always offered, saved or not: it can only ever mean the
-        # requester's own likeness, and an empty one becomes a question
-        # ("add one in Settings") rather than a plan the model cannot express.
-        return ["me", *self.attachments]
+        return face_handles(bool(self.likeness), list(self.attachments))
 
 
 def build_router(settings: Settings, vocab: Vocabulary) -> Router:

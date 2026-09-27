@@ -65,6 +65,7 @@ def test_valid_plan_round_trips():
     (_raw(action="extend", source="a1", direction=""), "direction"),
     (_raw(action="ask", question=""), "question"),
     (_raw(aspect="7:5"), "aspect"),
+    (_raw(action="select", source="a1"), "select picks an earlier image"),
 ])
 def test_invalid_plans_say_why(raw, why):
     with pytest.raises(PlanInvalid, match=why):
@@ -74,3 +75,12 @@ def test_invalid_plans_say_why(raw, why):
 def test_count_is_clamped_not_rejected():
     assert validate_plan(_raw(count=9), V, [], []).count == 4
     assert validate_plan(_raw(count=0), V, [], []).count == 1
+
+
+def test_me_is_offered_unless_a_photo_of_them_is_the_only_option():
+    """With no saved likeness, `me` can only become "go and save one" -- worth
+    offering when nothing is attached, but not when the attachment is their face."""
+    from alchemyui.planner.schema import face_handles
+    assert face_handles(True, ["a1"]) == ["me", "a1"]
+    assert face_handles(False, []) == ["me"]
+    assert face_handles(False, ["a1", "a2"]) == ["a1", "a2"]

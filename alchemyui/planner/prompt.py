@@ -63,10 +63,14 @@ Rules:
 - aspect: {', '.join(vocab.aspects)}. Portraits 3:4, landscapes 16:9, otherwise 1:1.
 - direction: for extend only: {', '.join(DIRECTIONS[1:])}. Otherwise "".
 - question and options: for ask only, with up to 4 short options. Otherwise "" and [].
-- Follow-ups like "make it darker" work on the current image. If the last turn made
-  several images and they have not picked one, ask which.
-- If they want one part of a photo changed, or someone or something added into a
-  particular photo, you cannot do that yet: ask, and offer a whole-image alternative."""
+- Follow-ups like "make it darker" work on the current image.
+- If the conversation says "none picked yet" and the message does not say which image,
+  ask which one, with options like "Image 1" and "Image 2".
+- We cannot yet: put a person into a particular photo; add or remove one particular
+  thing in a photo; change only one part of a photo; combine two photos. For any of
+  those, ask, and offer what we can do instead: a brand-new picture, or restyling the
+  whole photo.
+- "Me" with an attached photo of a face and no saved likeness: faces is that attachment."""
 
 
 def build_messages(vocab: Vocabulary, text: str, attachments: list[Attachment],

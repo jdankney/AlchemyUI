@@ -1,0 +1,578 @@
+[
+ {
+  "id": "ex1-lighthouse",
+  "text": "Generate me a photo of a spooky lighthouse at night",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate"
+  }
+ },
+ {
+  "id": "ex2-snowy-forest",
+  "text": "Snowy Forest during Snowstorm",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate"
+  }
+ },
+ {
+  "id": "ex3-me-into-my-bed",
+  "text": "Edit this photo of my bed to add me in it. I added myself in the other photo as reference",
+  "attachments": [
+   "person.jpg",
+   "bed.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1",
+   "a2"
+  ],
+  "expect": {
+   "action": "ask"
+  }
+ },
+ {
+  "id": "ex4-nike-pro",
+  "text": "Edit me into Nike Pro sweatpants",
+  "attachments": [],
+  "context": [],
+  "has_likeness": true,
+  "sources": [],
+  "expect": {
+   "action": [
+    "ask",
+    "likeness"
+   ]
+  }
+ },
+ {
+  "id": "ex5a-darker",
+  "text": "make it darker",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": "transform",
+   "source": "t1.1"
+  }
+ },
+ {
+  "id": "ex5b-use-second",
+  "text": "use the second one",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"two photos of a red fox in the snow\" -> generate. Images: t1.1, t1.2 (prompt: \"red fox standing in fresh snow, winter forest, photo\")",
+   "Latest images: t1.1 to t1.2 (none picked yet)."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1",
+   "t1.2"
+  ],
+  "expect": {
+   "action": "select",
+   "source": "t1.2"
+  }
+ },
+ {
+  "id": "ex5c-add-dog",
+  "text": "now add a dog",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"two photos of a red fox in the snow\" -> generate. Images: t1.1, t1.2 (prompt: \"red fox standing in fresh snow, winter forest, photo\")",
+   "Turn 2: \"use the second one\" -> select from t1.2",
+   "Current image: t1.2 (picked by the user)."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1",
+   "t1.2"
+  ],
+  "expect": {
+   "action": [
+    "transform",
+    "ask"
+   ],
+   "source": "t1.2"
+  }
+ },
+ {
+  "id": "gen-wizard-cat",
+  "text": "a cat wearing a tiny wizard hat",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate"
+  }
+ },
+ {
+  "id": "gen-four-cabins",
+  "text": "give me 4 variations of a cozy cabin in the woods",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate",
+   "count": 4
+  }
+ },
+ {
+  "id": "gen-best-fisherman",
+  "text": "Best quality portrait of an old fisherman, highly detailed",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate",
+   "quality": "best"
+  }
+ },
+ {
+  "id": "gen-desert-highway",
+  "text": "wide cinematic shot of a desert highway at sunset",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate"
+  }
+ },
+ {
+  "id": "gen-two-cars",
+  "text": "make 2 pictures of a red sports car, best quality",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate",
+   "count": 2,
+   "quality": "best"
+  }
+ },
+ {
+  "id": "gen-lowercase-terse",
+  "text": "mountain lake reflection",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "generate"
+  }
+ },
+ {
+  "id": "fu-sharpen",
+  "text": "sharpen this up",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": "enhance",
+   "source": "t1.1"
+  }
+ },
+ {
+  "id": "fu-wider",
+  "text": "make it wider",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": "extend",
+   "source": "t1.1",
+   "direction": "wider"
+  }
+ },
+ {
+  "id": "fu-oil-painting",
+  "text": "make it look like an oil painting",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": "transform",
+   "source": "t1.1"
+  }
+ },
+ {
+  "id": "fu-winter",
+  "text": "same thing but in winter",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": [
+    "transform",
+    "generate"
+   ]
+  }
+ },
+ {
+  "id": "fu-watercolor",
+  "text": "do it again but as a watercolor",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": [
+    "transform",
+    "generate"
+   ]
+  }
+ },
+ {
+  "id": "fu-ambiguous-darker",
+  "text": "make it darker",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"two photos of a red fox in the snow\" -> generate. Images: t1.1, t1.2 (prompt: \"red fox standing in fresh snow, winter forest, photo\")",
+   "Latest images: t1.1 to t1.2 (none picked yet)."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1",
+   "t1.2"
+  ],
+  "expect": {
+   "action": "ask"
+  }
+ },
+ {
+  "id": "fu-picked-brighter",
+  "text": "make it brighter",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"two photos of a red fox in the snow\" -> generate. Images: t1.1, t1.2 (prompt: \"red fox standing in fresh snow, winter forest, photo\")",
+   "Turn 2: \"use the second one\" -> select from t1.2",
+   "Current image: t1.2 (picked by the user)."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1",
+   "t1.2"
+  ],
+  "expect": {
+   "action": "transform",
+   "source": "t1.2"
+  }
+ },
+ {
+  "id": "fu-first-one",
+  "text": "I like the first one better, use that",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"two photos of a red fox in the snow\" -> generate. Images: t1.1, t1.2 (prompt: \"red fox standing in fresh snow, winter forest, photo\")",
+   "Latest images: t1.1 to t1.2 (none picked yet)."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1",
+   "t1.2"
+  ],
+  "expect": {
+   "action": "select",
+   "source": "t1.1"
+  }
+ },
+ {
+  "id": "fu-extend-up",
+  "text": "show more of the sky above it",
+  "attachments": [],
+  "context": [
+   "Turn 1: \"Generate me a photo of a spooky lighthouse at night\" -> generate. Images: t1.1 (prompt: \"spooky lighthouse on a rocky coast at night, storm clouds, moonlight, photo\")",
+   "Current image: t1.1."
+  ],
+  "has_likeness": false,
+  "sources": [
+   "t1.1"
+  ],
+  "expect": {
+   "action": "extend",
+   "source": "t1.1"
+  }
+ },
+ {
+  "id": "att-painting",
+  "text": "make this look like a painting",
+  "attachments": [
+   "beach.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": "transform",
+   "source": "a1"
+  }
+ },
+ {
+  "id": "att-enhance",
+  "text": "enhance this photo",
+  "attachments": [
+   "street.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": "enhance",
+   "source": "a1"
+  }
+ },
+ {
+  "id": "att-extend-left",
+  "text": "extend this to the left",
+  "attachments": [
+   "beach.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": "extend",
+   "source": "a1",
+   "direction": "left"
+  }
+ },
+ {
+  "id": "att-no-words",
+  "text": "",
+  "attachments": [
+   "dog.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": [
+    "ask",
+    "transform",
+    "enhance"
+   ]
+  }
+ },
+ {
+  "id": "att-night",
+  "text": "turn this into a night scene",
+  "attachments": [
+   "street.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": "transform",
+   "source": "a1"
+  }
+ },
+ {
+  "id": "att-second-of-two",
+  "text": "make the second one snowy",
+  "attachments": [
+   "beach.jpg",
+   "street.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1",
+   "a2"
+  ],
+  "expect": {
+   "action": "transform",
+   "source": "a2"
+  }
+ },
+ {
+  "id": "me-astronaut",
+  "text": "Me as an astronaut",
+  "attachments": [],
+  "context": [],
+  "has_likeness": true,
+  "sources": [],
+  "expect": {
+   "action": "likeness",
+   "faces": "me"
+  }
+ },
+ {
+  "id": "me-beach",
+  "text": "put me on a beach at sunset",
+  "attachments": [],
+  "context": [],
+  "has_likeness": true,
+  "sources": [],
+  "expect": {
+   "action": "likeness",
+   "faces": "me"
+  }
+ },
+ {
+  "id": "me-astronaut-no-saved",
+  "text": "me as an astronaut",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": [
+    "likeness",
+    "ask"
+   ]
+  }
+ },
+ {
+  "id": "me-from-attachment",
+  "text": "this is me, make me a knight in armour",
+  "attachments": [
+   "person.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": "likeness",
+   "faces": "a1"
+  }
+ },
+ {
+  "id": "no-sky-region",
+  "text": "change the sky to a sunset",
+  "attachments": [
+   "beach.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": [
+    "ask",
+    "transform"
+   ]
+  }
+ },
+ {
+  "id": "no-remove-dog",
+  "text": "remove the dog from this",
+  "attachments": [
+   "dog.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": "ask"
+  }
+ },
+ {
+  "id": "no-combine",
+  "text": "combine these two photos into one",
+  "attachments": [
+   "beach.jpg",
+   "street.jpg"
+  ],
+  "context": [],
+  "has_likeness": false,
+  "sources": [
+   "a1",
+   "a2"
+  ],
+  "expect": {
+   "action": "ask"
+  }
+ },
+ {
+  "id": "no-wear-these",
+  "text": "put these on me",
+  "attachments": [
+   "sweatpants.jpg"
+  ],
+  "context": [],
+  "has_likeness": true,
+  "sources": [
+   "a1"
+  ],
+  "expect": {
+   "action": [
+    "ask",
+    "likeness"
+   ]
+  }
+ },
+ {
+  "id": "chat-hi",
+  "text": "what can you do?",
+  "attachments": [],
+  "context": [],
+  "has_likeness": false,
+  "sources": [],
+  "expect": {
+   "action": "ask"
+  }
+ }
+]
