@@ -1,5 +1,5 @@
 // AlchemyUI admin -- vanilla JS, no build step. A separate page rather than a
-// view inside the SPA: the SPA is replaced wholesale in Phase 7, this is not.
+// view inside the SPA, so it survives any rework of the chat UI untouched.
 //
 // Metadata only. The API never returns anyone's prompts or images, and this
 // page never asks.
@@ -23,7 +23,7 @@ async function post(p, b) {
   return r.json();
 }
 
-const S = { live: null, users: [], failures: [], days: 30, error: null };
+const S = { live: null, users: [], failures: [], fallbacks: [], days: 30, error: null };
 // The API returns exact figures; rounding happens here, and a tiny non-zero
 // amount says so rather than printing as zero.
 const fmtMoney = n => (n > 0 && n < 0.0001) ? '<$0.0001' : '$' + (n || 0).toFixed(n >= 1 ? 2 : 4);
@@ -38,6 +38,23 @@ const fmtAgo = ts => {
 function tile(label, value, sub) {
   return h('div', { class: 'adm-tile' }, h('div', { class: 'small faint' }, label),
     h('div', { class: 'adm-big' }, value), sub ? h('div', { class: 'small muted' }, sub) : null);
+}
+
+// The router's two backends, in words. `ok` is null until a backend is first
+// used, so a quiet morning does not read as an outage.
+function backend(b) {
+  if (!b) return 'off';
+  if (b.ok === null) return 'not used yet';
+  return b.ok ? 'ok' : (b.error || 'down');
+}
+function routerTile(R) {
+  if (!R) return null;
+  const r = R.router || {};
+  const p = r.primary;
+  const main = p ? (p.ok === false ? 'unreachable' : 'Llamacracy') : (r.fallback ? 'backup only' : 'off');
+  return tile('Planner', main,
+    `${p ? `${p.model}: ${backend(p)} · ` : ''}backup: ${backend(r.fallback)}` +
+    (R.planning ? ` · ${R.planning} planning` : ''));
 }
 
 function liveSection() {
@@ -58,7 +75,8 @@ function liveSection() {
       tile('Utilisation', g.available ? `${g.util_pct.toFixed(0)}%` : 'n/a'),
       tile('VRAM', g.available ? `${(g.vram_used_mib / 1024).toFixed(1)} / ${(g.vram_total_mib / 1024).toFixed(0)} GB` : 'n/a'),
       tile('Queue', String(L.queue.depth), running ? `running: ${running.owner}` : 'idle'),
-      tile('ComfyUI', L.comfy_connected ? 'connected' : 'down', (L.resident_checkpoint || '').split('/').pop() || 'nothing loaded')),
+      tile('ComfyUI', L.comfy_connected ? 'connected' : 'down', (L.resident_checkpoint || '').split('/').pop() || 'nothing loaded'),
+      routerTile(L.router)),
     L.queue.jobs.length ? h('table', { class: 'adm-table' },
       h('tr', {}, ['#', 'Owner', 'Workflow', 'Model', 'Status', 'Progress'].map(c => h('th', {}, c))),
       L.queue.jobs.map(j => h('tr', {},
@@ -93,11 +111,21 @@ function failuresSection() {
       : h('p', { class: 'muted' }, 'None.'));
 }
 
+function fallbacksSection() {
+  return h('section', {}, h('h2', {}, 'Planned without Llamacracy'),
+    S.fallbacks.length ? h('table', { class: 'adm-table' },
+      S.fallbacks.map(f => h('tr', {}, h('td', { class: 'small muted' }, fmtAgo(f.created_at)),
+        h('td', {}, f.owner || ''),
+        h('td', {}, f.plan_source === 'default' ? 'no planner (words used as-is)' : 'backup planner'),
+        h('td', { class: 'small' }, f.plan_error || ''))))
+      : h('p', { class: 'muted' }, 'None.'));
+}
+
 function render() {
   $app.replaceChildren(h('div', { class: 'wrap adm' },
     h('header', { class: 'adm-head' }, h('h1', {}, 'AlchemyUI admin'), h('a', { href: '/' }, 'Back to the app')),
     S.error ? h('div', { class: 'card', style: 'padding:12px;color:var(--danger)' }, S.error) : null,
-    liveSection(), usersSection(), failuresSection()));
+    liveSection(), usersSection(), failuresSection(), fallbacksSection()));
 }
 
 async function toggle(u) {
@@ -110,7 +138,10 @@ async function loadUsers() {
   render();
 }
 async function loadFailures() {
-  try { S.failures = (await get('/api/admin/failures')).failures; }
+  try {
+    S.failures = (await get('/api/admin/failures')).failures;
+    S.fallbacks = (await get('/api/admin/fallbacks')).fallbacks;
+  }
   catch (e) { S.error = e.message; }
   render();
 }

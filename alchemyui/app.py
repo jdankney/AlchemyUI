@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import admin as admin_api
+from . import chat as chat_api
 from .comfy import ComfyClient, get_comfy
 from .config import Settings, get_settings
 from .db import Database, get_db, now
@@ -75,6 +76,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AlchemyUI", lifespan=lifespan)
 app.include_router(admin_api.router)
+app.include_router(chat_api.router)
 
 
 def _sse(obj: dict) -> str:
@@ -253,8 +255,10 @@ def _ref_row(r) -> dict:
 @app.get("/api/references")
 async def list_references(principal: Principal = Depends(get_principal),
                           db: Database = Depends(get_db)):
+    """The saved likeness: what `me` means. Faces taken from one turn's
+    attachment are kept for that turn only and never listed here."""
     rows = await db.fetch_all(
-        "SELECT * FROM refs WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
+        "SELECT * FROM refs WHERE user_id = ? AND is_likeness = 1 ORDER BY created_at DESC",
         (principal.user_id,))
     return {"references": [_ref_row(r) for r in rows]}
 
@@ -273,6 +277,12 @@ async def create_reference(file: UploadFile = File(...),
     Nothing reaches a generation unless every reference is already known good
     and already the same size.
     """
+    have = await db.fetch_one(
+        "SELECT COUNT(*) AS n FROM refs WHERE user_id = ? AND is_likeness = 1",
+        (principal.user_id,))
+    if have["n"] >= settings.max_references:
+        raise HTTPException(400, f"You can save up to {settings.max_references} likeness photos. "
+                                 "Remove one first.")
     label = (file.filename or "that image").strip()[:80]
     try:
         png, meta = normalise_reference(
@@ -286,7 +296,7 @@ async def create_reference(file: UploadFile = File(...),
     ts = now()
     await db.execute(
         "INSERT INTO refs (id, user_id, path, comfy_name, label, width, height, faces_found, "
-        "  face_score, face_px, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "  face_score, face_px, is_likeness, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,1,?)",
         (ref_id, principal.user_id, path, comfy_name, label, meta["width"], meta["height"],
          meta["faces_found"], meta["face_score"], meta["face_px"], ts),
     )

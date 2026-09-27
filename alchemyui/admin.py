@@ -16,6 +16,7 @@ from .db import Database, get_db, now
 from .identity import Principal, require_admin
 from .power import gpu_stats
 from .queue import QueueManager, get_queue
+from .threads import ChatEngine, get_engine
 
 router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
 
@@ -26,7 +27,8 @@ async def _names(db: Database) -> dict[int, str]:
 
 
 @router.get("/live")
-async def live(qm: QueueManager = Depends(get_queue), db: Database = Depends(get_db)):
+async def live(qm: QueueManager = Depends(get_queue), db: Database = Depends(get_db),
+               engine: ChatEngine = Depends(get_engine)):
     """Polled by the admin page every couple of seconds, which is also what
     keeps nvidia-smi from being run when nobody is looking."""
     return {
@@ -34,6 +36,7 @@ async def live(qm: QueueManager = Depends(get_queue), db: Database = Depends(get
         "queue": qm.admin_view(await _names(db)),
         "resident_checkpoint": qm._resident_checkpoint,
         "comfy_connected": qm._comfy_connected,
+        "router": engine.status(),
         "ts": now(),
     }
 
@@ -74,6 +77,24 @@ async def failures(limit: int = 20, db: Database = Depends(get_db)):
         "id": r["id"], "workflow_id": r["workflow_id"], "error_text": r["error_text"],
         "finished_at": r["finished_at"],
         "owner": r["display_name"] or r["email"] or "unclaimed",
+    } for r in rows]}
+
+
+@router.get("/fallbacks")
+async def fallbacks(limit: int = 20, db: Database = Depends(get_db)):
+    """Turns the primary did not plan. Who, when, and why the primary was
+    skipped -- never the message or the prompt."""
+    rows = await db.fetch_all(
+        "SELECT t.id, t.plan_source, t.plan_error, t.router_ms, t.created_at, "
+        "  u.display_name, u.email "
+        "FROM turns t LEFT JOIN users u ON u.id = t.user_id "
+        "WHERE t.plan_source IN ('fallback', 'default') ORDER BY t.created_at DESC LIMIT ?",
+        (max(1, min(limit, 100)),),
+    )
+    return {"fallbacks": [{
+        "turn_id": r["id"], "plan_source": r["plan_source"],
+        "plan_error": (r["plan_error"] or "")[:300], "router_ms": r["router_ms"],
+        "created_at": r["created_at"], "owner": r["display_name"] or r["email"],
     } for r in rows]}
 
 
