@@ -8,18 +8,22 @@
 #   alchemyui-ctl status    unit state + a reachability check on both ends
 #   alchemyui-ctl logs      follow the journal
 #
-# Two units: the app, and its oauth2-proxy auth edge (only if installed and
-# enabled). ComfyUI keeps its own lifetime.
+# Up to three units: the app, its oauth2-proxy auth edge and the router's CPU
+# fallback, each only if installed and enabled. ComfyUI keeps its own lifetime.
 set -euo pipefail
 
 UNITS=(alchemyui.service)
 [ -f "$HOME/.config/systemd/user/alchemyui-auth.service" ] && \
   systemctl --user is-enabled -q alchemyui-auth.service 2>/dev/null && UNITS+=(alchemyui-auth.service)
+[ -f "$HOME/.config/systemd/user/alchemyui-router.service" ] && \
+  systemctl --user is-enabled -q alchemyui-router.service 2>/dev/null && UNITS+=(alchemyui-router.service)
 REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 PORT="$(grep -E '^PORT=' "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d ' ' || true)"
 PORT="${PORT:-8300}"
 COMFY="$(grep -E '^COMFYUI_URL=' "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' || true)"
 COMFY="${COMFY:-http://127.0.0.1:8188}"
+ROUTER="$(grep -E '^ROUTER_FALLBACK_URL=' "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d ' ' || true)"
+ROUTER="${ROUTER:-http://127.0.0.1:8081/v1}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!! \033[0m %s\n' "$*"; }
@@ -61,6 +65,11 @@ cmd_status() {
     echo "  comfyui: ok    ${COMFY}"
   else
     warn "ComfyUI is not answering at ${COMFY} -- nothing will generate until it is"
+  fi
+  if curl -sf -o /dev/null --max-time 3 "${ROUTER%/v1}/health"; then
+    echo "  router:  ok    ${ROUTER} (CPU fallback)"
+  else
+    echo "  router:  off   ${ROUTER} -- planning relies on Llamacracy alone"
   fi
 }
 

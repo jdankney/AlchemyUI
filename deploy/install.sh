@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # AlchemyUI deployment. Idempotent -- safe to re-run after every `git pull`.
 #
-# Sets up two systemd *user* units -- the app, and its oauth2-proxy auth edge
-# (started only once it is configured) -- and the CLI that controls them.
+# Sets up three systemd *user* units -- the app, its oauth2-proxy auth edge
+# (started only once it is configured), and the router's CPU-only fallback
+# (started only once .env says where its model is) -- and the CLI.
 # Scaffolds .env from the committed example. Nothing machine-specific is
 # committed; this script is what fills in this checkout's paths.
 #
@@ -52,6 +53,24 @@ sed -e "s#@REPO@#${REPO}#g" -e "s#@PORT@#${PORT}#g" \
   "$REPO/deploy/systemd/alchemyui.service" > "$UNIT_DIR/alchemyui.service"
 systemctl --user daemon-reload
 systemctl --user enable --now alchemyui.service
+
+# --- 5b. the router's local fallback -------------------------------------------
+# Optional: without it, planning uses Llamacracy alone and falls back to the
+# user's own words when Llamacracy is down.
+envval() { grep -E "^$1=" "$REPO/.env" | tail -1 | cut -d= -f2- | tr -d ' '; }
+GGUF="$(envval ROUTER_FALLBACK_GGUF)"
+MMPROJ="$(envval ROUTER_FALLBACK_MMPROJ)"
+LLAMA_SERVER="$(command -v llama-server || true)"
+if [ -n "$GGUF" ] && [ -f "$GGUF" ] && [ -n "$MMPROJ" ] && [ -f "$MMPROJ" ] && [ -n "$LLAMA_SERVER" ]; then
+  say "installing the router fallback (llama-server on the CPU, $(basename "$GGUF"))"
+  sed -e "s#@REPO@#${REPO}#g" -e "s#@LLAMA_SERVER@#${LLAMA_SERVER}#g" \
+    "$REPO/deploy/systemd/alchemyui-router.service" > "$UNIT_DIR/alchemyui-router.service"
+  systemctl --user daemon-reload
+  systemctl --user enable --now alchemyui-router.service
+else
+  warn "router fallback not installed: set ROUTER_FALLBACK_GGUF and ROUTER_FALLBACK_MMPROJ"
+  warn "  in .env to a vision GGUF and its mmproj (and have llama-server on PATH), then re-run."
+fi
 
 # --- 6. the `alchemyui` CLI --------------------------------------------------
 # Symlinked, not copied, so a `git pull` plus a re-run always gives the latest.

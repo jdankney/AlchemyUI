@@ -1,0 +1,29 @@
+# ~/.config/systemd/user/alchemyui-router.service  (installed by deploy/install.sh,
+# which replaces @REPO@ and @LLAMA_SERVER@)
+#
+# The router's local fallback: a CPU-only llama-server with the vision
+# projector, used when Llamacracy is unreachable, slow, or cannot read the
+# images a message carries. It must never touch the GPU -- that belongs to
+# ComfyUI, with 6GB and no room to share -- so it is kept off it twice: no
+# CUDA device is visible to it at all, and nothing is offloaded even if one
+# were. -ngl 0 alone is not enough; a CUDA build still offloads big prompt
+# batches and the projector.
+#
+# The model paths are machine-specific, so they live in the gitignored .env
+# (ROUTER_FALLBACK_GGUF, ROUTER_FALLBACK_MMPROJ, ROUTER_FALLBACK_PORT).
+[Unit]
+Description=AlchemyUI router fallback (llama-server, CPU only)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+EnvironmentFile=@REPO@/.env
+# -t 6: the i7-9750H's physical cores. The GPU queue is serial and the app is
+# light, so planning may have them.
+ExecStart=/usr/bin/env CUDA_VISIBLE_DEVICES= @LLAMA_SERVER@ -m ${ROUTER_FALLBACK_GGUF} --mmproj ${ROUTER_FALLBACK_MMPROJ} -ngl 0 --no-mmproj-offload --host 127.0.0.1 --port ${ROUTER_FALLBACK_PORT} -c 8192 -t 6 --jinja --no-webui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
