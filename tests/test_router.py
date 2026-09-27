@@ -43,6 +43,7 @@ async def test_client_sends_schema_thinking_off_and_key():
     assert b["response_format"]["type"] == "json_schema"
     assert b["response_format"]["json_schema"]["schema"] == {"type": "object"}
     assert b["chat_template_kwargs"] == {"enable_thinking": False}
+    assert b["thinking_budget_tokens"] == 0 and b["temperature"] == 0
     assert c.status()["ok"] is True
 
 

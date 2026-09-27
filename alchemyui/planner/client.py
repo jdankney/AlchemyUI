@@ -72,8 +72,12 @@ class LLMClient:
             # should plan the same way twice (router-eval saw "put me on a
             # beach" flip between likeness and generate at 0.2).
             "max_tokens": max_tokens, "stream": False,
-            # Thinking adds latency and nothing to a classification.
+            # Thinking adds latency and nothing to a classification. The
+            # template flag is not enough on its own: with an assistant turn in
+            # the history (a repair retry) Llamacracy's E4B reasoned anyway,
+            # ~250 hidden tokens that overran the cap. The budget stops it.
             "chat_template_kwargs": {"enable_thinking": False},
+            "thinking_budget_tokens": 0,
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": "plan", "strict": True, "schema": schema}},
         }
