@@ -84,3 +84,19 @@ def test_me_is_offered_unless_a_photo_of_them_is_the_only_option():
     assert face_handles(True, ["a1"]) == ["me", "a1"]
     assert face_handles(False, []) == ["me"]
     assert face_handles(False, ["a1", "a2"]) == ["a1", "a2"]
+
+
+@pytest.mark.parametrize("raw, sources, faces", [
+    (_raw(action="likeness", faces="a1"), ["a1", "a2"], ["a1", "a2"]),   # spec example 3
+    (_raw(action="generate"), ["a1", "a2"], ["a1", "a2"]),               # "combine these"
+    (_raw(action="likeness", faces="me"), ["a1"], ["me", "a1"]),         # "put these on me"
+])
+def test_a_new_picture_may_not_silently_ignore_an_attachment(raw, sources, faces):
+    with pytest.raises(PlanInvalid, match="ignore"):
+        validate_plan(json.dumps(raw), V, sources, faces)
+
+
+def test_an_edit_may_use_just_one_of_several_attachments():
+    """'make the second one snowy' with two attached is fine."""
+    p = validate_plan(json.dumps(_raw(action="transform", source="a2")), V, ["a1", "a2"], [])
+    assert p.source == "a2"

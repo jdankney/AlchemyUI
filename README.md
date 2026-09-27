@@ -7,47 +7,37 @@ FastAPI, one SQLite file, vanilla JS with no build step, systemd user units.
 
 One GPU, strict FIFO, honest ETAs, no cloud.
 
-> **Mid-redesign.** **v2** turns AlchemyUI into a multi-user app like
-> Llamacracy, driven from one ChatGPT-style prompt box. **Phase 6 is in**:
-> accounts through Dex, everything scoped per user, strict FIFO across users,
-> per-job energy and cost, and a live admin page (see
-> [Accounts and the admin page](#accounts-and-the-admin-page)). The UI is
-> still v1's six-mode composer until Phase 7 replaces it with the prompt
-> box. There, a small language model decides what each message needs: "a
-> spooky lighthouse at night", "add me to this photo of my bed", "put me in
-> Nike Pro sweatpants". See [Roadmap](#roadmap) and
-> [`ALCHEMYUI_SPEC.md`](ALCHEMYUI_SPEC.md) for the plan.
+You type, optionally attach images, and get images back in a conversation.
+No modes, samplers or models to pick:
 
-**What works today (v1):**
+- *"Generate me a photo of a spooky lighthouse at night"* makes one.
+- *"make it darker"*, *"give me 2 variations"*, *"use the second one"* work
+  on what the conversation just made.
+- *[a photo]* *"make this look like an oil painting"*, *"sharpen this up"*,
+  *"make it wider"* edit what you attach.
+- *"Me as an astronaut"* uses the likeness photos saved in your settings.
+- Anything it cannot do yet, like *"add me into this photo of my bed"*, gets an
+  honest question, with what it can do instead.
 
-- **Generate** — text to image on SDXL: prompt, negative prompt, aspect ratio,
-  sampler settings, live step-by-step progress, cancel, and a gallery that
-  survives a refresh.
-- **Transform** — img2img with a plain-language "how much should change?"
-  slider instead of a denoise number.
-- **Paint over** — inpainting, with a brush/eraser mask editor (undo, clear,
-  adjustable brush) drawn straight onto the image.
-- **Extend** — outpainting in any direction, with a to-scale preview of the
-  canvas you are about to ask for.
-- **Enhance** — the quality chain: 4× upscale, scale back, a tiled hi-res
-  refine pass, then face cleanup. Works on any image you already have,
-  including one you just inpainted. Roughly triples the wait.
-- **High quality toggle** on Generate — the same chain welded onto a fresh
-  generation, as one job. Measured at about 2.8× a plain generation on a
-  GTX 1660 Ti (372s against 133s).
+A small language model turns each message into a **plan** in a closed
+vocabulary, never a graph; code checks the plan and turns it into ComfyUI
+jobs. The plan is always shown on the reply as one line ("Generating ·
+Realistic Vision 6.0 · 3:4"). Tap it for the rewritten prompt, model and
+seed, and to run it again.
 
-- **Likeness** — generate someone from reference photos of their face
-  (IPAdapter FaceID), up to four at once. Each photo is checked for a face and
-  cropped square around it as you add it, so a bad one is refused there rather
-  than killing a job minutes later.
+A few friends share one GPU: accounts through Llamacracy's Dex, everything
+private to its owner, strict FIFO across people, energy and electricity cost
+per person, and a live admin page.
 
-Across all of them: a **model picker** (SDXL and SD1.5, with resolution and
-sampling following the model), **batch generation**, **live previews** while a
-job samples, **favourites and tags**, **prompt history with search**, and
-**saved presets**.
+> **v2 is being built in phases.** Phases 6 (multi-user) and 7 (the chat and
+> its router) are in. Phase 8 adds editing one part of a photo, Phase 9 web
+> references ("me in Nike Pro sweatpants"). See [Roadmap](#roadmap).
 
-Any image in the gallery can go straight back into the editors: **Edit** drops
-it into Transform, **Enhance** runs the quality chain over it.
+Underneath the chat, everything v1 built is still there: SDXL and SD1.5
+generation, img2img, inpainting on a dedicated inpainting UNet, outpainting,
+the enhance chain (4x upscale, tiled refine, face cleanup), FaceID likeness,
+live previews, a queue with real positions and learned ETAs, and a library
+with favourites and search.
 
 ---
 
@@ -93,8 +83,11 @@ the registry names them the way ComfyUI does, folder included:
 | `SD1.5/` | Realistic Vision 6.0, Realistic Vision Hyper (six steps), epiCRealism, SD 1.5 base |
 | `SD1.5-Inpaint/` | Realistic Vision 6.0 Inpainting (the default for paint-over and extend), and its Hyper variant |
 
-Each carries `traits` (`fast`, `quality`, `photoreal`, `inpaint`) that
-Phase 7's model policy chooses on. To add one, drop it into its family folder
+Each carries `traits` (`fast`, `quality`, `photoreal`, `inpaint`, `draft`)
+that the router's model policy chooses on: a request for "best" quality gets
+RealVis XL, anything else a `fast` SD1.5 model (preferring whichever is
+already loaded), extending gets the inpainting UNet. The Hyper models are
+`draft`: quick, but they watermark, so nothing picks them automatically. To add one, drop it into its family folder
 and add an entry to the `checkpoints` block of `workflows/registry.json` — no
 code changes. Old bare filenames from v1 presets still resolve.
 
@@ -118,16 +111,45 @@ not at `~/ComfyUI`.
 
 ---
 
+### The router
+
+Each message is planned by a small vision LLM, off the GPU, while other
+people's jobs run:
+
+1. **Llamacracy** (`ROUTER_PRIMARY_URL`, `ROUTER_PRIMARY_KEY`,
+   `ROUTER_PRIMARY_MODEL`): its `/v1` as a dedicated `alchemyui` account.
+2. **A CPU-only llama-server on this laptop** (`alchemyui-router`), when
+   Llamacracy is down, slow, or its model cannot see the attached images.
+3. **Your own words**, when neither answers: text becomes the prompt as-is;
+   an attached image gets a short "restyle, enhance or extend?" question.
+
+The chip says which one planned a turn, and the admin page lists every turn
+Llamacracy did not plan. Output is constrained to a JSON schema generated from
+the registry and from the images *you* can name in that conversation, so a
+model cannot pick an action that doesn't exist or reach anyone else's image.
+
+```bash
+uv run alchemyui router-eval              # 37 cases, both backends, side by side
+uv run alchemyui router-eval --backend primary --only ex3-me-into-my-bed
+```
+
+The report lands in `data/router-eval/`. It is how the primary model was
+chosen, and what to rerun after changing the prompt.
+
+---
+
 ## Running it as a service
 
 ```bash
-./deploy/install.sh        # systemd user unit + linger + the alchemyui-ctl CLI
-alchemyui-ctl status       # unit state, plus whether the app and ComfyUI answer
+./deploy/install.sh        # systemd user units + linger + the alchemyui-ctl CLI
+alchemyui-ctl status       # unit state, plus whether the app, ComfyUI and the router answer
 alchemyui-ctl logs
 ```
 
 Idempotent — safe to re-run after every `git pull`. It does not manage ComfyUI;
-that has its own flags and its own lifetime.
+that has its own flags and its own lifetime. The router fallback is installed
+once `.env` names its model (`ROUTER_FALLBACK_GGUF`, `ROUTER_FALLBACK_MMPROJ`);
+it runs with no GPU visible to it at all, and needs about 7.5GB of RAM.
 
 ---
 
@@ -140,8 +162,8 @@ entry to add to Dex's `config.yaml` on the other box. Then unset `DEV_MODE`.
 Without `DEV_MODE`, the app refuses to serve any request that lacks
 oauth2-proxy's identity headers, so it can never run open by accident.
 
-- **Everyone's work is their own.** Images, jobs, uploads, reference faces,
-  presets and the live event stream are scoped to their owner. Someone else's
+- **Everyone's work is their own.** Conversations, images, jobs, uploads,
+  likeness photos and the live event stream are scoped to their owner. Someone else's
   item is a 404, not a 403.
 - **Strict FIFO across users.** The queue still groups one person's jobs by
   model to avoid a 30s checkpoint swap, but it never moves anyone ahead of
@@ -149,8 +171,8 @@ oauth2-proxy's identity headers, so it can never run open by accident.
 - **`ADMIN_EMAILS`** (comma-separated) names who may open `/admin`: the GPU
   live (watts, temperature, VRAM, utilisation), the queue with each job's
   owner, energy and cost per user over 7 days, 30 days or all time, recent
-  failures, and disabling an account. It shows **metadata only**: never
-  anyone's prompts or images.
+  failures, turns planned without Llamacracy, and disabling an account. It
+  shows **metadata only**: never anyone's messages, prompts or images.
 - **Energy** is the GPU's measured draw (sampled with `nvidia-smi` while a job
   holds it) plus `NON_GPU_LOAD_WATTS` for the rest of the machine, times the
   time it held the GPU. Cost uses `ELECTRICITY_RATE`, or `TOU_SCHEDULE` for
@@ -167,11 +189,16 @@ oauth2-proxy's identity headers, so it can never run open by accident.
 
 ```
  browser ──SSE/HTTP──▶ FastAPI (AlchemyUI) ──HTTP + WebSocket──▶ ComfyUI :8188
-                            │   ▲
-                            ▼   │
-                      SQLite (WAL)            OUTPUT_DIR on disk
-                      jobs · images
+                            │   │
+                            │   └─ planner ─▶ Llamacracy /v1  (fallback: llama-server :8081, CPU)
+                            ▼
+                      SQLite (WAL)            data/outputs · data/uploads
+                      threads · turns · jobs · images
 ```
+
+A message becomes a **turn**. The turn is planned (`planning`), may stop to ask
+you something (`needs_input`, holding no place in the queue), then queues its
+jobs, one ComfyUI run each.
 
 **Port 8188 is never exposed to a browser.** ComfyUI has no auth and `/prompt`
 accepts arbitrary graphs — that is arbitrary node execution and filesystem
@@ -217,7 +244,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 187 tests, no GPU, no ComfyUI; node for the front-end boot test
+uv run pytest -q          # 289 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
 uv run ruff check .
 ```
 
@@ -232,12 +259,16 @@ never completes.
 
 ```
 alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
-                  registry.py workflows · storage.py files+uploads
-                  faces.py reference validation · cli.py validate, reassign
+                  threads.py turns and their states · chat.py /api/threads, /api/turns
+                  planner/ the router: schema, policy, prompt, client, router
+                  jobs.py plan -> queued jobs · registry.py workflows
+                  storage.py files+uploads · faces.py likeness validation
                   identity.py users · admin.py /api/admin · power.py nvidia-smi
-                  meter.py energy and cost
+                  meter.py energy and cost · evals.py router-eval
+                  cli.py validate, reassign, router-eval
 workflows/        registry.json (workflows + checkpoints) + seven templates
-deploy/           app + auth-edge units, oauth2-proxy config, install.sh, alchemyui-ctl
+evals/router/     router-eval's 37 cases and their fixture photos (generated here)
+deploy/           app, auth-edge and router units, oauth2-proxy config, install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
 tests/            pytest; no GPU required
 ```
@@ -254,8 +285,8 @@ starts. The details are in [`ALCHEMYUI_SPEC.md`](ALCHEMYUI_SPEC.md) §14.
 | Phase | What it adds |
 |---|---|
 | 1–5 | **v1, complete.** Generate, edit, quality chain, likeness, and the platform layer. |
-| 6 | **Multi-user platform.** Dex accounts via oauth2-proxy, everything scoped per user, strict FIFO across users, energy and cost per job, and a live admin page. The fixed model catalogue and the SD1.5 inpaint models also land here. |
-| 7 | **Chat UI and router.** One prompt box with attachments, threads, and a planner LLM (Llamacracy, with a CPU-only local fallback) that turns each message into a validated plan. |
+| 6 | **Multi-user platform. Done.** Dex accounts via oauth2-proxy, everything scoped per user, strict FIFO across users, energy and cost per job, and a live admin page. The fixed model catalogue and the SD1.5 inpaint models also land here. |
+| 7 | **Chat UI and router. Done.** One prompt box with attachments, threads, and a planner LLM (Llamacracy, with a CPU-only local fallback) that turns each message into a validated plan. |
 | 8 | **Region-aware editing.** "Add me to my bed", "change the sky": segmentation, then inpaint. |
 | 9 | **Web references.** "Me in Nike Pro sweatpants": search, pick, use as reference. |
 

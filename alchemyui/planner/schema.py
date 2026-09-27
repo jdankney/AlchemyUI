@@ -159,6 +159,14 @@ def validate_plan(raw: str | dict, vocab: Vocabulary, sources: list[str],
     aspect = s("aspect") or vocab.aspects[0]
     if aspect not in vocab.aspects:
         raise PlanInvalid(f"aspect {aspect!r} is not one of {', '.join(vocab.aspects)}")
+    # A new picture that leaves an attached photo out is dropping what the
+    # user gave us; say so, so the repair retry can ask instead. Edits are
+    # exempt: "make the second one snowy" rightly uses only a2.
+    if action in ("generate", "likeness"):
+        unused = [h for h in sources if h.startswith("a") and h != face]
+        if unused:
+            raise PlanInvalid(f"{action} would ignore the attached {', '.join(unused)}; use it as the "
+                              "source of an edit, or ask what they want done with it")
     strength = s("strength") if s("strength") in STRENGTHS else "medium"
     quality = s("quality") if s("quality") in QUALITIES else "fast"
     try:

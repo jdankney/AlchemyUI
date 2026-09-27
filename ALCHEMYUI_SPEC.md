@@ -142,8 +142,15 @@ registry that uses bare filenames will not find them.
     - **Not every model can see images.** `qwen35-4b` rejects image input
       because no mmproj is configured for it, so the primary router model must
       be one that has one.
+    - **Verified 2026-09-27: none can, today.** `gemma4-e4b-uncensored` and
+      `gemma4-26b-a4b-qat` both answer `image input is not supported` even
+      though Llamacracy's model table lists them as reading photos: the
+      llama-server instances on gpu-server are launched without `--mmproj`.
+      The router treats that as its own failure kind (§7.4).
 - **Local fallback:** `~/models/Gemma4-E4B-QAT-UD-Q4_K_XL/`, the GGUF at
-  4.2GB plus `mmproj-BF16.gguf`, run **CPU-only** on this laptop.
+  4.2GB plus `mmproj-BF16.gguf`, run **CPU-only** on this laptop. Measured:
+  7.4GB resident with an 8K context, ~7.7 tokens/s generation, ~20 tokens/s
+  prompt processing; a plan takes 15-35s.
 
 **Measured performance on this laptop:**
 
@@ -221,6 +228,10 @@ Every message is a **turn** in a **thread**. A turn produces zero or more
             needs_input ────┘   (the user answers in the thread)
 ```
 
+**Stored states** (as built): `planning | needs_input | queued | done |
+failed | cancelled`. `submitted` and `ready` above are instants rather than
+resting states, and `running` lives on the turn's jobs.
+
 **Planning happens off the GPU and concurrently.** The router (§7) runs while
 other users' jobs hold the GPU. A turn that needs the user's answer parks in
 `needs_input` and **holds no place in the queue**, so nobody ever waits on
@@ -295,7 +306,21 @@ a handle:
 | `extend` | "make it wider" | outpaint | 7 |
 | `edit_region` | "add me to my bed", "change the sky to sunset" | segment → inpaint (+ FaceID / reference) | 8 |
 | `with_reference` | "me in Nike Pro sweatpants" | search → pick → `edit_region` | 9 |
+| `select` | "use the second one" | none: moves the thread's focus | 7 |
 | `ask` | the model itself is unsure | → `needs_input` | 7 |
+
+`select` was added while building Phase 7: without it, the middle step of
+example 5 had no honest route.
+
+**Handles are enumerated per call.** On top of the registry-generated
+actions, `source` and `faces` are enums of the handles that exist in the
+requesting user's scope *for that turn*, so constrained decoding cannot emit a
+handle that fails to resolve. `me` is offered when a likeness is saved or
+nothing is attached. Resolution still checks every handle (hard rule 3).
+
+**Validation also refuses** a `generate` or `likeness` plan that would ignore
+an attached image (it is dropping what the user gave; the repair retry turns
+it into an `ask` or an edit), and a `select` of an attachment.
 
 **The vocabulary is generated from the registry.** The JSON schema and the
 system prompt are built at boot from the workflows that validated. Until
@@ -330,12 +355,18 @@ the user's own words; the rewritten prompt sits behind the plan chip.
   - `-ngl 0` **and** `CUDA_VISIBLE_DEVICES=` are both required. A CUDA build
     can otherwise offload large prompt batches or the vision projector to the
     GPU even with zero layers.
-  - It stays resident in about 5GB of RAM.
+  - It stays resident in about 7.5GB of RAM (measured; the BF16 projector
+    and an 8K context).
   - It runs as its own systemd user unit, `alchemyui-router`.
 - **Constrained decoding:** `response_format: {type: json_schema, …}`, which
   llama-server enforces as a grammar. It survives Llamacracy's passthrough
   (verified, §3).
 - **Thinking off:** it adds latency and nothing to a classification.
+  Temperature 0, so a message plans the same way twice.
+- **A model that cannot see** (`image input is not supported`) is not a
+  failed backend: turns without images keep using it; turns with images go
+  to the fallback, and if nothing else answers, back to it with the
+  attachments described rather than shown.
 - **Concurrency:** planning is capped per backend: 2 for Llamacracy, 1 for the
   CPU fallback.
 - **Every turn records** its `plan_source` (`primary`, `fallback` or `default`),
@@ -556,7 +587,7 @@ The v1 UI keeps working throughout, now scoped per user.
   - The admin page shows live GPU stats during a real generation.
   - Inpainting on the RV6 inpaint checkpoint shows no seam.
 
-### Phase 7 — Chat UI and router
+### Phase 7 — Chat UI and router (complete, 2026-09-27)
 
 - `threads`, `turns`, the turn state machine, handles and scoped resolution.
 - `planner/`: `client.py`, `schema.py` (generated from the registry),

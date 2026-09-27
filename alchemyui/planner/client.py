@@ -64,7 +64,10 @@ class LLMClient:
     async def complete(self, messages: list[dict], schema: dict,
                        max_tokens: int = 700) -> LLMReply:
         body = {
-            "model": self.model, "messages": messages, "temperature": 0.2,
+            "model": self.model, "messages": messages, "temperature": 0.0,
+            # Temperature 0: routing is a classification, and the same message
+            # should plan the same way twice (router-eval saw "put me on a
+            # beach" flip between likeness and generate at 0.2).
             "max_tokens": max_tokens, "stream": False,
             # Thinking adds latency and nothing to a classification.
             "chat_template_kwargs": {"enable_thinking": False},

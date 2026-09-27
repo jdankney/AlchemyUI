@@ -54,13 +54,14 @@ async def test_run_eval_scores_each_backend_alone():
              {"id": "b", "text": "y", "attachments": ["dog.jpg"], "context": [],
               "has_likeness": False, "sources": ["a1"], "faces": ["me", "a1"],
               "expect": {"action": "transform", "source": "a1"}}]
-    good = Scripted("primary", GOOD, GOOD)          # b: a valid plan, but the wrong action
+    # b: generate while a photo is attached -- refused, repaired, refused again
+    good = Scripted("primary", GOOD, GOOD, GOOD)
     down = Scripted("fallback", LLMError("unreachable", "x"), LLMError("unreachable", "x"))
-    also_good = Scripted("backup", GOOD, GOOD)
+    also_good = Scripted("backup", GOOD, GOOD, GOOD)
     res = await run_eval(cases, {"primary": good, "fallback": down, "backup": also_good}, V)
     assert [r["ok"] for r in res["rows"]["primary"]] == [True, False]
-    assert res["rows"]["primary"][1]["why"] == "generate, wanted transform"
-    assert res["rows"]["primary"][1]["repaired"] is False
+    assert res["rows"]["primary"][1]["why"] == "no valid plan"
+    assert res["rows"]["primary"][1]["repaired"] is True
     assert res["summary"]["primary"]["accuracy"] == 0.5
     assert res["summary"]["fallback"]["ok"] == 0          # the default planner never counts
     assert res["summary"]["backup"]["ok"] == 1            # whatever slot it ran in
