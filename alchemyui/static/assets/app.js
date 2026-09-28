@@ -40,12 +40,50 @@ const h = (tag, attrs = {}, ...kids) => {
     if (k === 'class') e.className = v;
     else if (k === 'html') e.innerHTML = v;
     else if (k === 'value') e.value = v;          // property, not attribute
-    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k.startsWith('on')) listen(e, k.slice(2), v);
     else e.setAttribute(k, v === true ? '' : v);
   }
   for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) e.append(kid.nodeType ? kid : String(kid));
   return e;
 };
+// Handlers go through e._on, so patch() can hand an element that stays on
+// the page the fresh closures of the one built to replace it.
+function listen(e, type, fn) {
+  if (!e._on) e._on = {};
+  if (!e._on[type]) e.addEventListener(type, ev => e._on[type](ev));
+  e._on[type] = fn;
+}
+
+// Bring the live DOM in line with a freshly built tree, keeping every node
+// that is still there. Replacing a turn outright on each sampler step or
+// clock tick replayed its entrance animation and restarted the pulse and
+// shimmer: a visible flicker. Children match on id (or data-k), else in order.
+function patch(old, neu) {
+  if (old.nodeType !== neu.nodeType || old.nodeName !== neu.nodeName) return false;
+  if (old.nodeType !== 1) { if (old.data !== neu.data) old.data = neu.data; return true; }
+  for (const a of [...old.attributes]) {
+    // a <details> the person opened stays open
+    if (!neu.hasAttribute(a.name) && !(a.name === 'open' && old.nodeName === 'DETAILS')) old.removeAttribute(a.name);
+  }
+  for (const a of neu.attributes) if (old.getAttribute(a.name) !== a.value) old.setAttribute(a.name, a.value);
+  for (const [type, fn] of Object.entries(neu._on || {})) listen(old, type, fn);
+  if (old._on) for (const type of Object.keys(old._on)) if (!neu._on?.[type]) old._on[type] = () => {};
+  patchKids(old, [...neu.childNodes]);
+  return true;
+}
+const keyOf = n => n.nodeType === 1 ? (n.id || n.dataset?.k || '') : '';
+function patchKids(parent, kids) {
+  const olds = [...parent.childNodes];
+  const byKey = new Map(olds.filter(keyOf).map(n => [keyOf(n), n]));
+  const loose = olds.filter(n => !keyOf(n));
+  kids.forEach((neu, i) => {
+    const k = keyOf(neu);
+    const cand = k ? byKey.get(k) : loose.shift();
+    const node = cand && patch(cand, neu) ? cand : neu;
+    if (parent.childNodes[i] !== node) parent.insertBefore(node, parent.childNodes[i] || null);
+  });
+  while (parent.childNodes.length > kids.length) parent.lastChild.remove();
+}
 
 // Inline SVG icons (stroke-based, 24-unit grid). Emoji render differently on
 // every platform; these don't.
@@ -385,7 +423,7 @@ function render() {
     S.viewer ? viewer() : null,
     h('div', { class: 'toasts', id: 'toasts' })].filter(Boolean));
 }
-const swap = (id, el) => { const old = document.getElementById(id); if (old) old.replaceWith(el); };
+const swap = (id, el) => { const old = document.getElementById(id); if (old && !patch(old, el)) old.replaceWith(el); };
 function renderRail() { swap('rail', rail()); }
 function renderStatus() { swap('status', statusBadge()); }
 function renderHead() { swap('chat-head', chatHead()); }
@@ -398,7 +436,7 @@ function renderAtts() { const el = document.getElementById('atts'); if (el) el.r
 function renderThread() {
   const el = document.getElementById('thread'); if (!el) return;
   const stick = nearBottom();
-  el.replaceChildren(...threadKids());
+  patchKids(el, threadKids());
   stickToBottom(stick);
 }
 function renderTurn(id) {
@@ -406,7 +444,8 @@ function renderTurn(id) {
   const el = document.getElementById('turn-' + id);
   if (!t || !el) { renderThread(); return; }
   const stick = nearBottom();
-  el.replaceWith(turnEl(t));
+  const fresh = turnEl(t);
+  if (!patch(el, fresh)) el.replaceWith(fresh);
   stickToBottom(stick);
 }
 function nearBottom() {
@@ -659,7 +698,7 @@ function picture(img, n) {
     const items = S.turns.flatMap(x => x.images);
     S.viewer = { items, i: Math.max(0, items.findIndex(x => x.id === img.id)) }; render();
   };
-  return h('figure', { class: 'pic', style: glow(img.palette) },
+  return h('figure', { class: 'pic', 'data-k': 'img-' + img.id, style: glow(img.palette) },
     h('div', { class: 'halo' }),
     h('div', { class: 'ph', style: ratio(img.width, img.height) },
       h('img', { src: img.url, alt: img.params?.prompt || 'Generated image', loading: 'lazy',
