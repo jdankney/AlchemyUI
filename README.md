@@ -119,7 +119,8 @@ people's jobs run:
 1. **Llamacracy** (`ROUTER_PRIMARY_URL`, `ROUTER_PRIMARY_KEY`,
    `ROUTER_PRIMARY_MODEL`): its `/v1` as a dedicated `alchemyui` account.
 2. **A CPU-only llama-server on this laptop** (`alchemyui-router`), when
-   Llamacracy is down, slow, or its model cannot see the attached images.
+   Llamacracy is down, slow, or its model cannot see the attached images
+   (Llamacracy's `/v1` routes images to each model's `-vision` entry).
 3. **Your own words**, when neither answers: text becomes the prompt as-is;
    an attached image gets a short "restyle, enhance or extend?" question.
 

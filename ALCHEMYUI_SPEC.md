@@ -142,11 +142,13 @@ registry that uses bare filenames will not find them.
     - **Not every model can see images.** `qwen35-4b` rejects image input
       because no mmproj is configured for it, so the primary router model must
       be one that has one.
-    - **Verified 2026-09-27: none can, today.** `gemma4-e4b-uncensored` and
-      `gemma4-26b-a4b-qat` both answer `image input is not supported` even
-      though Llamacracy's model table lists them as reading photos: the
-      llama-server instances on gpu-server are launched without `--mmproj`.
-      The router treats that as its own failure kind (§7.4).
+    - **Verified 2026-09-27: `/v1` could not, at first.** Llamacracy serves
+      each model's mmproj as a hidden `<model>-vision` entry, and only its own
+      web chat switched to it; `/v1` sent images to the text-only entry, which
+      answers `image input is not supported`. Fixed in Llamacracy on
+      2026-09-28: `/v1` now routes any request carrying an image to the
+      `-vision` entry. The router still treats a model that cannot see as its
+      own failure kind (§7.4).
 - **Local fallback:** `~/models/Gemma4-E4B-QAT-UD-Q4_K_XL/`, the GGUF at
   4.2GB plus `mmproj-BF16.gguf`, run **CPU-only** on this laptop. Measured:
   7.4GB resident with an 8K context, ~7.7 tokens/s generation, ~20 tokens/s

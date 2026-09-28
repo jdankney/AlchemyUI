@@ -227,7 +227,8 @@ alone, with no fallback and no default planner to hide a miss.
 | Run | Llamacracy `gemma4-e4b-uncensored` | Local `gemma4-e4b` (CPU) |
 |---|---|---|
 | First run, first prompt | 31/37 (84%), median 3.5s | — |
-| After the fixes below | **35/37 (95%), median 3.5s** | **34/37 (92%), median 18.4s** |
+| After the fixes below (Llamacracy blind on images) | 35/37 (95%), median 3.5s | **34/37 (92%), median 18.4s** |
+| Llamacracy seeing the images (2026-09-28) | **33/37 (89%), median 3.7s** | — |
 
 - **`ROUTER_PRIMARY_MODEL=gemma4-e4b-uncensored`.** Chosen by the author for
   its ~4s wake-up and then confirmed by the eval. The bigger models would add
@@ -254,15 +255,20 @@ alone, with no fallback and no default planner to hide a miss.
 
 ### Things only the real models showed
 
-- **Llamacracy's models cannot see, today.** Its model table says E4B and the
-  26B read photos, but both answer `image input is not supported`: the
-  llama-server instances on gpu-server launch without `--mmproj`. So "cannot
-  see" is its own failure kind, not an outage. Turns without images keep using
-  Llamacracy, and turns with images go to the local fallback, which has its
-  projector. If the fallback is down too, Llamacracy plans them blind, with
-  the attachments described. That is how the primary scored 95% above: blind
-  on every attachment case. When gpu-server gains its mmproj, nothing here
-  changes.
+- **Llamacracy's `/v1` could not see, at first.** Its models' projectors live
+  in hidden `<model>-vision` entries, and only Llamacracy's own web chat
+  switched to them, so `/v1` answered `image input is not supported`. That is
+  why "cannot see" is its own failure kind, not an outage: image turns go to
+  the local fallback, and if that is down too, Llamacracy plans them blind,
+  with the attachments described. The 95% above was blind on every attachment
+  case. Llamacracy's `/v1` has routed images to the `-vision` entry since
+  2026-09-28, with no change here.
+- **Seeing costs two cases.** With the photos in front of it the primary
+  scores 33/37. "remove the dog from this" becomes a transform with "dog" in
+  the negative, the fallback's old miss. "put these on me" picks `likeness`
+  twice, is refused both times, and falls through; live, that costs a trip to
+  the fallback before the default planner asks, which is the right answer
+  arrived at slowly. Image turns plan in 4–15s, against 20–40s on the laptop.
 - **`enable_thinking: false` is not enough.** With an assistant turn in the
   history, which every repair retry has, the uncensored E4B reasoned anyway:
   ~250 hidden tokens before the plan, overrunning the token cap. Live, "give
