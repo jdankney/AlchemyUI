@@ -91,10 +91,11 @@ def _axis_value(param: str, value, presets: dict, choices: dict):
     return value
 
 
-def base_settings(reg: Registry, name: str, presets: dict) -> dict:
+def base_settings(reg: Registry, name: str, presets: dict, baseline: bool = False) -> dict:
     """What a model runs with today: its registry defaults with any adopted
-    profile laid over them, filled out to every profile key."""
-    ck = reg.checkpoint(name)
+    profile laid over them, filled out to every profile key. With
+    `baseline`, what the registry file alone says."""
+    ck = reg.base(name) if baseline else reg.checkpoint(name)
     wf = _txt2img(reg)
     d = {**wf.defaults, **(ck.defaults if ck else {})}
     return {
@@ -416,8 +417,12 @@ class LabEngine:
             raise KeyError(cell_id)
         if cell["state"] != "done" or not cell["image_id"]:
             raise LabInvalid("only a finished image can be made the default")
+        # Only what differs from the registry becomes the profile, so it reads
+        # as what the Lab changed -- and a later registry edit to anything
+        # else still takes effect.
+        base = base_settings(self.reg, cell["checkpoint"], self.presets, baseline=True)
         settings = {k: v for k, v in json.loads(cell["settings_json"]).items()
-                    if k in PROFILE_KEYS}
+                    if k in PROFILE_KEYS and base.get(k) != v}
         saved = await save_profile(self.db, self.reg, cell["checkpoint"], settings, user_id,
                                    cover_image_id=cell["image_id"])
         log.info("lab: %s adopted %s from cell %s", cell["checkpoint"], saved, cell_id)

@@ -376,13 +376,14 @@ function onImage(d) {
 
 /* --------------------------------------------------------------- rendering */
 function render() {
-  $app.replaceChildren(
+  // replaceChildren would print a null as the text "null"
+  $app.replaceChildren(...[
     h('div', { class: 'shell' + (S.drawer ? ' drawer-open' : '') },
       rail(),
       h('div', { class: 'scrim', onclick: () => { S.drawer = false; render(); } }),
       h('main', { class: 'main' }, mobileTop(), mainView())),
     S.viewer ? viewer() : null,
-    h('div', { class: 'toasts', id: 'toasts' }));
+    h('div', { class: 'toasts', id: 'toasts' })].filter(Boolean));
 }
 const swap = (id, el) => { const old = document.getElementById(id); if (old) old.replaceWith(el); };
 function renderRail() { swap('rail', rail()); }

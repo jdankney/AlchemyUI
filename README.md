@@ -8,7 +8,8 @@ FastAPI, one SQLite file, vanilla JS with no build step, systemd user units.
 One GPU, strict FIFO, honest ETAs, no cloud.
 
 You type, optionally attach images, and get images back in a conversation.
-No modes, samplers or models to pick:
+No modes or samplers to set. The one choice beyond words is which model paints:
+**Auto**, or a photoreal model pinned from the pill in the prompt box.
 
 - *"Generate me a photo of a spooky lighthouse at night"* makes one.
 - *"make it darker"*, *"give me 2 variations"*, *"use the second one"* work
@@ -29,8 +30,9 @@ A few friends share one GPU: accounts through Llamacracy's Dex, everything
 private to its owner, strict FIFO across people, energy and electricity cost
 per person, and a live admin page.
 
-> **v2 is being built in phases.** Phases 6 (multi-user) and 7 (the chat and
-> its router) are in. Phase 8 adds editing one part of a photo, Phase 9 web
+> **v2 is being built in phases.** Phases 6 (multi-user), 7 (the chat and
+> its router) and 7.5 (the Alchemy UI, the model switcher and the Photoreal Lab)
+> are in. Phase 8 adds editing one part of a photo, Phase 9 web
 > references ("me in Nike Pro sweatpants"). See [Roadmap](#roadmap).
 
 Underneath the chat, everything v1 built is still there: SDXL and SD1.5
@@ -94,6 +96,21 @@ code changes. Old bare filenames from v1 presets still resolve.
 `alchemyui validate --live` tells you whether the checkpoint is actually
 present before you wait through a generation to find out.
 
+**Picking one.** The pill in the prompt box lists the photoreal SDXL and SD1.5
+models, each with a one-line `tagline` from the registry, whether it is loaded,
+and how long an image takes right now. A pick sticks to the thread. The
+policy honours it, except where that would break the picture:
+- extending always uses the inpainting UNet;
+- likeness and enhance need SDXL;
+- a source under 900px is not handed to SDXL.
+
+When a pick is not used, a note under the reply says why.
+
+**Profiles.** A model's tuned defaults are steps, cfg, sampler, scheduler, a
+*look* appended to every prompt, and a negative prompt. They are adopted from
+the Photoreal Lab and stored in the database, laid over the registry's
+defaults for everyone until reset. The registry file stays the baseline.
+
 Paint-over and extend default to the dedicated inpainting UNet, whose
 nine-channel input sees the unmasked image while it samples. That is what
 removes the faint seam v1 showed when it inpainted with RealVisXL.
@@ -136,6 +153,31 @@ uv run alchemyui router-eval --backend primary --only ex3-me-into-my-bed
 
 The report lands in `data/router-eval/`. It is how the primary model was
 chosen, and what to rerun after changing the prompt.
+
+---
+
+### The Photoreal Lab
+
+`/lab`, for admins, is where the models are tuned towards photographs.
+
+1. **Define a run.** Choose one to four models, some of the eight committed
+   test prompts (`workflows/lab.json`: portrait, street, landscape,
+   interior, food, animal, night city, hands) or your own, and one to three
+   seeds. Then choose up to two things to compare: cfg, steps, sampler, look
+   or negative. The form shows the image count and roughly how long it will
+   take before you start.
+2. **It renders in the background.** Lab jobs run in a low-priority lane.
+   Anyone's message goes ahead of every Lab job, and takes the GPU from a
+   running one with a targeted interrupt. That cell is simply rendered again
+   later. People's queue positions never count Lab work.
+3. **Compare and star.** Every cell of a run shares its seed, so what differs
+   between neighbours is the setting. The grid is laid out as rows × columns,
+   per model and prompt. Star what reads most like a photograph.
+4. **Make default.** The tally adds stars up across every prompt and seed.
+   Making the winner the default saves only what differs from the registry,
+   and makes that image the model's cover in the menu. *Model defaults*
+   shows what each model runs with, marks what the Lab changed, and can
+   **Reset** it or copy it as registry JSON to commit.
 
 ---
 
@@ -245,7 +287,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 290 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
+uv run pytest -q          # 346 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
 uv run ruff check .
 ```
 
@@ -266,8 +308,11 @@ alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
                   storage.py files+uploads · faces.py likeness validation
                   identity.py users · admin.py /api/admin · power.py nvidia-smi
                   meter.py energy and cost · evals.py router-eval
+                  profiles.py tuned model defaults · lab.py, lab_api.py the Photoreal Lab
                   cli.py validate, reassign, router-eval
-workflows/        registry.json (workflows + checkpoints) + seven templates
+alchemyui/static/ index.html, admin.html, lab.html · assets/ app.js, admin.js, lab.js, styles.css
+                  assets/fonts/ Sora and JetBrains Mono (OFL), self-hosted: no CDN at all
+workflows/        registry.json (workflows + checkpoints) + seven templates · lab.json (the Lab's test prompts)
 evals/router/     router-eval's 37 cases and their fixture photos (generated here)
 deploy/           app, auth-edge and router units, oauth2-proxy config, install.sh, alchemyui-ctl
 docs/             DECISIONS.md -- every non-obvious choice, with its reasoning
@@ -288,6 +333,7 @@ starts. The details are in [`ALCHEMYUI_SPEC.md`](ALCHEMYUI_SPEC.md) §14.
 | 1–5 | **v1, complete.** Generate, edit, quality chain, likeness, and the platform layer. |
 | 6 | **Multi-user platform. Done.** Dex accounts via oauth2-proxy, everything scoped per user, strict FIFO across users, energy and cost per job, and a live admin page. The fixed model catalogue and the SD1.5 inpaint models also land here. |
 | 7 | **Chat UI and router. Done.** One prompt box with attachments, threads, and a planner LLM (Llamacracy, with a CPU-only local fallback) that turns each message into a validated plan. |
+| 7.5 | **Alchemy UI, model choice, Photoreal Lab. Done.** A new look with images as the star, a per-message model switcher, and an admin Lab that benchmarks settings and adopts the winners as per-model defaults. |
 | 8 | **Region-aware editing.** "Add me to my bed", "change the sky": segmentation, then inpaint. |
 | 9 | **Web references.** "Me in Nike Pro sweatpants": search, pick, use as reference. |
 

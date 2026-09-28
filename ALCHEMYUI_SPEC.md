@@ -517,6 +517,8 @@ As simple as possible. It should feel like ChatGPT.
   answers it too.
 - **The composer:** one auto-growing textarea; attach by paperclip, drag and
   drop, or paste (up to 4 images); Enter sends; Stop cancels the running turn.
+  Since Phase 7.5 it also has the model pill: Auto, or a pinned photoreal
+  model, which sticks to the thread.
 - **Settings:** likeness photos, and your usage this month.
 - **Library:** v1's gallery, minus power tools, with a favourite filter and
   search.
@@ -604,7 +606,7 @@ The v1 UI keeps working throughout, now scoped per user.
   - With Llamacracy unreachable, turns still plan on the fallback and say so.
   - The router-eval report exists for both backends.
 
-### Phase 7.5 — Alchemy UI, model choice and the Photoreal Lab
+### Phase 7.5 — Alchemy UI, model choice and the Photoreal Lab (complete, 2026-09-28)
 
 Added 2026-09-28 at the author's request. The design is in
 `docs/superpowers/specs/2026-09-28-alchemy-ui-models-lab-design.md`.

@@ -342,6 +342,123 @@ with a scripted ComfyUI and router: every view, desktop and phone widths,
 the drawer, a real send, images arriving over the event stream. It is what
 found the POST/stream race above.
 
+## Phase 7.5 — as built
+
+Built 2026-09-28, from `docs/superpowers/specs/2026-09-28-alchemy-ui-models-lab-design.md`.
+The author asked for three things: a polished UI in which the images are the
+star, a way to switch models, and a way to benchmark settings towards
+photorealism.
+
+### The look
+
+- **"Alchemy", chosen from three mockups.** The others were a warm-black
+  "Darkroom" and a paper-white "Gallery". The mockups used the app's own
+  images, and the four-screen follow-up was approved as drawn.
+- **The glow is the image's own palette, not a live blur of the image.**
+  `storage.palette_of` ranks six median-cut colours by share times
+  saturation, so a small sunset outranks the grey sea around it. It keeps
+  three, stored as `images.palette` when the image is saved and backfilled
+  for older images at startup. The CSS draws three radial gradients from
+  them and blurs that static layer once. The first attempt had no blur and
+  read as a brown frame, not a glow.
+- **Fonts are self-hosted.** Sora (variable) and JetBrains Mono, latin
+  subset, OFL, are about 77 KB in total. The app still loads nothing from
+  anyone else, so it works offline over NetBird.
+- **Checked by screenshot, not just by the boot test.** Headless Chromium
+  shot every view at 1440 and 390 wide. That found five real bugs:
+  - the thread lost the bottom while images loaded in;
+  - v1's bare model filenames showed raw;
+  - the phone composer's placeholder wrapped;
+  - the Lab's start button never enabled;
+  - `replaceChildren(null)` printed the word "null".
+
+### The switcher
+
+- **Per message, sticky to the thread**, as the author chose. The pill offers
+  `Registry.switchable()`: photoreal, SDXL or SD1.5, best first. Each row
+  shows its registry tagline, whether it is loaded, and a live time from the
+  queue's own estimates.
+- **The pin replaces the trait lookup, and the planner's `quality` word
+  loses to it.** There are three exceptions, each with a note in the reply,
+  and each was exercised live:
+
+  | Case | Live result |
+  |---|---|
+  | epiCRealism pinned, "a red vintage car…" | epiCRealism, 37 s end to end |
+  | epiCRealism pinned, "make it wider" | RV 6.0 Inpainting. Note: "Not epiCRealism: extending always uses the inpainting model." |
+  | RealVis XL pinned, "now make it look like winter" | RealVis XL. The source was the widened 1344px image, so the small-source rule rightly did not apply |
+  | Likeness with an SD1.5 pin | SDXL, with a note (tested below HTTP; not run live, to save the GPU) |
+
+### Profiles
+
+- **In the database, laid over the registry.** `Registry.set_override`
+  keeps the file's entry as `base()`. Everything that reads a checkpoint (the
+  policy, the queue's estimates, the menu) sees the tuned values, and Reset
+  goes back.
+- **Only what differs is stored.** An adopted cell carries its full
+  settings, but the profile keeps only what differs from the registry. So it
+  reads as "what the Lab changed", and a later registry edit to anything else
+  still takes effect.
+- **The look is appended in one place, `profiles.compose`.** Both the
+  policy and the Lab call it, so what was benchmarked is exactly what a
+  message runs.
+
+### The Lab
+
+- **A second lane in the one queue, not a second queue.** A person's job is
+  inserted ahead of every lab job, and swap-aware reordering never crosses
+  lanes. A person's submit preempts a running lab job with a targeted
+  interrupt, and the Lab requeues that cell. `depth` counts people's jobs
+  only, and there is a separate `lab_depth`.
+- **Measured live, mid-run:** a pinned RV 6.0 message sent while the Lab
+  held the GPU finished in **38.7 s** (7.5 s planning, 30.5 s rendering). One
+  lab job was preempted and requeued. While the Lab ran, people's queue depth
+  read 0.
+- **The run estimate is optimistic for the Lab.** 36 cells were estimated
+  at 695 s and took 1149 s. The learned per-step time comes mostly from
+  512² renders, and the Lab's prompts are 576×768 and 896×512. Per-step
+  cost scales with pixels, and the estimator does not know that yet.
+- **Admin-only is a 403, not the spec's 404.** That follows `/api/admin`'s
+  existing rule: the Lab holds no one's private data, so its existence is
+  not a secret.
+
+### The starter benchmark (not yet adopted in production)
+
+The run: RV 6.0 and epiCRealism, the portrait, street and night-city prompts,
+one shared seed, cfg {3.5, 5, 7} × look {none, RAW photo}. That is 36 images.
+They were judged by eye for "reads as a photograph":
+
+| | Look: none | Look: RAW photo |
+|---|---|---|
+| **RV 6.0** | Odd compositions (a portrait leaning out of a window, with hand trouble at cfg 5 and 7); street scenes look like stock photography | Natural framing, real skin texture, soft window light. **cfg 5 is best in all three prompts**, cfg 3.5 a close second |
+| **epiCRealism** | Consistent, but cfg 7 (its registry default) is overcooked: oversaturated neon, harsh freckles | **cfg 5 is best in all three prompts**; 3.5 is slightly soft |
+
+**Recommendation:**
+- RV 6.0 keeps cfg 5 and gains the RAW-photo look.
+- epiCRealism goes from cfg 7 to cfg 5 and gains the same look.
+
+Adopting both in a scratch copy of the database worked end to end. The next
+pinned epiCRealism message ran at cfg 5, with the look appended. This is
+**not** applied to the live database. That is one click per model in `/lab`
+on the real server, or a rerun there to confirm it by the author's own eye.
+
+Worth trying next:
+- RealVis XL at cfg {4.5, 6.5} × look. Each image costs about 2.5 min, so
+  run it overnight.
+- Hyper at cfg {1.5, 2.5}, to see whether a higher cfg lets the negative
+  suppress its fake watermarks.
+
+### The live service runs from the main checkout
+
+Found while building this phase: `alchemyui.service` runs uvicorn from the
+repository's own checkout, and static files are read from disk on every
+request. So switching that checkout to the feature branch served unfinished
+front end against the old running backend. It degraded gracefully (the model
+menu said "Loading models…"), but it is production. The branch moved into a
+worktree (`../AlchemyUI-phase7.5`), and the checkout went back to `main`.
+From now on, phases are built in a worktree, and live tests use a scratch
+instance on another port, on a copy of the database.
+
 ## Architecture
 
 - **FastAPI + one SQLite connection (WAL) behind one asyncio lock**, lifted

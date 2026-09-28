@@ -365,7 +365,7 @@ function render() {
     S.presets ? h('div', { class: 'lab', style: 'margin-top:20px' },
       h('div', { style: 'display:flex;flex-direction:column;gap:16px' }, newRunPanel(), runsList()),
       main) : h('p', { class: 'muted' }, 'Loading…')),
-  S.viewer ? viewer() : null);
+  ...(S.viewer ? [viewer()].filter(Boolean) : []));
 }
 
 async function loadRuns() { try { S.runs = (await get('/api/lab/runs')).runs; } catch (e) { S.error = e.message; } }

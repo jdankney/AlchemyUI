@@ -158,7 +158,8 @@ def test_stars_tally_and_the_winner_becomes_the_default(client):
     cell = tally["rows"][0]["cell_id"]
     r = client.post(f"/api/lab/cells/{cell}/adopt", headers=A)
     assert r.status_code == 200, r.text
-    assert r.json()["settings"]["cfg"] == 6.0
+    # only what the Lab changed is kept: cfg, not the untouched steps or sampler
+    assert r.json()["settings"] == {"cfg": 6.0}
     # everyone's next job on that model runs with it...
     from alchemyui.threads import get_engine
     assert get_engine().reg.checkpoint(RV6).defaults["cfg"] == 6.0
