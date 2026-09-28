@@ -19,6 +19,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -156,6 +157,52 @@ async def list_workflows(principal: Principal = Depends(get_principal),
         entry["load_seconds"] = here["load_seconds"]
         out.append(entry)
     return {"workflows": out, "resident_checkpoint": qm._resident_checkpoint}
+
+
+# --------------------------------------------------------------------------- #
+# the model menu (Phase 7.5)
+# --------------------------------------------------------------------------- #
+# Only a Lab image a profile adopted can be a cover: those are renders of the
+# Lab's fixed test prompts, not anyone's own pictures, so every signed-in
+# person may see them.
+_COVERS = ("SELECT mp.checkpoint, i.id, i.path FROM model_profiles mp "
+           "JOIN images i ON i.id = mp.cover_image_id WHERE i.lab_run_id IS NOT NULL")
+
+
+@app.get("/api/models")
+async def list_models(principal: Principal = Depends(get_principal),
+                      reg: Registry = Depends(get_registry),
+                      qm: QueueManager = Depends(get_queue),
+                      db: Database = Depends(get_db)):
+    """What the composer's model menu offers, with how long one image takes
+    on each right now -- measured timings, plus a load when it is not the
+    model in memory."""
+    wf = next((w for w in reg.all() if w.kind == "txt2img" and not w.references), None)
+    covers = {r["checkpoint"]: r["id"] for r in await db.fetch_all(_COVERS)}
+    out = []
+    for c in reg.switchable():
+        cold = c.name != qm._resident_checkpoint
+        steps = int(c.defaults.get("steps") or (wf.defaults.get("steps") if wf else 25) or 25)
+        eta = qm.estimate(wf.key, steps, cold, c.name) if wf else None
+        cover = covers.get(c.name)
+        out.append({
+            "name": c.name, "label": c.label, "tagline": c.tagline, "family": c.family,
+            "traits": list(c.traits), "resident": not cold,
+            "eta_s": round(eta) if eta is not None else None,
+            "cover_url": (f"/api/models/cover?name={quote(c.name)}&v={cover[:8]}"
+                          if cover else None),
+        })
+    return {"models": out, "resident": qm._resident_checkpoint}
+
+
+@app.get("/api/models/cover")
+async def model_cover(name: str, principal: Principal = Depends(get_principal),
+                      db: Database = Depends(get_db)):
+    row = await db.fetch_one(_COVERS + " AND mp.checkpoint = ?", (name,))
+    if row is None or not Path(row["path"]).exists():
+        raise HTTPException(404, "no cover for that model")
+    return FileResponse(row["path"], media_type="image/png",
+                        headers={"Cache-Control": "private, max-age=86400"})
 
 
 # --------------------------------------------------------------------------- #

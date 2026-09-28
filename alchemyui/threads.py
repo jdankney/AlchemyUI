@@ -86,6 +86,13 @@ class Scope:
         return face_handles(bool(self.likeness), list(self.attachments))
 
 
+# A thread row plus its cover: the newest image any of its turns made.
+THREAD_SELECT = (
+    "SELECT threads.*, (SELECT i.id FROM images i JOIN turns t ON i.turn_id = t.id "
+    "  WHERE t.thread_id = threads.id AND i.user_id = threads.user_id "
+    "  ORDER BY i.created_at DESC LIMIT 1) AS cover FROM threads ")
+
+
 def build_router(settings: Settings, vocab: Vocabulary) -> Router:
     primary = fallback = None
     if settings.router_primary_url.strip() and settings.router_primary_model.strip():
@@ -158,7 +165,7 @@ class ChatEngine:
 
     async def _thread_row(self, user_id: int, thread_id: str):
         row = await self.db.fetch_one(
-            "SELECT * FROM threads WHERE id = ? AND user_id = ? AND deleted = 0",
+            THREAD_SELECT + "WHERE id = ? AND user_id = ? AND deleted = 0",
             (thread_id, user_id))
         if row is None:
             raise TurnError("no such thread", 404)
@@ -170,11 +177,12 @@ class ChatEngine:
     @staticmethod
     def _thread_public(r) -> dict:
         return {"id": r["id"], "title": r["title"], "created_at": r["created_at"],
-                "updated_at": r["updated_at"]}
+                "updated_at": r["updated_at"], "model": r["model"],
+                "cover_url": f"/api/images/{r['cover']}/file" if r["cover"] else None}
 
     async def list_threads(self, user_id: int, limit: int = 200) -> list[dict]:
         rows = await self.db.fetch_all(
-            "SELECT * FROM threads WHERE user_id = ? AND deleted = 0 "
+            THREAD_SELECT + "WHERE user_id = ? AND deleted = 0 "
             "ORDER BY updated_at DESC LIMIT ?", (user_id, limit))
         return [self._thread_public(r) for r in rows]
 
@@ -215,6 +223,8 @@ class ChatEngine:
             "attachments": [{"handle": f"a{i + 1}", "id": uid, "url": f"/api/uploads/{uid}/file"}
                             for i, uid in enumerate(json.loads(row["attachments_json"]))],
             "state": row["state"],
+            "pin": row["model"],
+            "note": ((plan or {}).get("compiled") or {}).get("note") or None,
             "chip": plan.get("chip") if plan else None,
             "plan": plan.get("plan") if plan else None,
             "compiled": plan.get("compiled") if plan else None,
@@ -238,7 +248,7 @@ class ChatEngine:
 
     async def _emit(self, turn_id: str) -> None:
         row = await self._row(turn_id)
-        thread = await self.db.fetch_one("SELECT * FROM threads WHERE id = ?", (row["thread_id"],))
+        thread = await self.db.fetch_one(THREAD_SELECT + "WHERE id = ?", (row["thread_id"],))
         await self.qm.emit({"type": "turn", "turn": await self.turn_public(row),
                             "thread": self._thread_public(thread)}, owner=row["user_id"])
 
@@ -250,8 +260,11 @@ class ChatEngine:
 
     # -- writing --------------------------------------------------------------
     async def create_turn(self, user_id: int, text: str, attachment_ids: list[str],
-                          thread_id: str | None = None) -> dict:
+                          thread_id: str | None = None, model: str | None = None) -> dict:
         text = (text or "").strip()
+        if model and model not in {c.name for c in self.reg.switchable()}:
+            raise TurnError("that model isn't one you can pick")
+        model = model or None
         if not text and not attachment_ids:
             raise TurnError("type a message or attach an image")
         if len(text) > MAX_TEXT:
@@ -270,8 +283,8 @@ class ChatEngine:
             thread_id = uuid.uuid4().hex
             title = " ".join(text.split())[:60] or "Images"
             await self.db.execute(
-                "INSERT INTO threads (id, user_id, title, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)", (thread_id, user_id, title, ts, ts))
+                "INSERT INTO threads (id, user_id, title, model, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (thread_id, user_id, title, model, ts, ts))
 
         turn_id = uuid.uuid4().hex
         async with self._lock:
@@ -279,10 +292,12 @@ class ChatEngine:
                                         "WHERE thread_id = ?", (thread_id,))
             await self.db.execute(
                 "INSERT INTO turns (id, thread_id, user_id, seq, text, attachments_json, state, "
-                "  created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "  model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (turn_id, thread_id, user_id, r["n"] + 1, text, json.dumps(list(attachment_ids)),
-                 TurnState.PLANNING.value, ts))
-            await self.db.execute("UPDATE threads SET updated_at = ? WHERE id = ?", (ts, thread_id))
+                 TurnState.PLANNING.value, model, ts))
+            # The thread follows its latest pick, so reopening it restores the menu.
+            await self.db.execute("UPDATE threads SET updated_at = ?, model = ? WHERE id = ?",
+                                  (ts, model, thread_id))
         await self._emit(turn_id)
         self._spawn(turn_id)
         return await self.turn_public(await self._row(turn_id))
@@ -507,7 +522,7 @@ class ChatEngine:
             img = scope.outputs[plan.source]
             size = (img["width"], img["height"])
 
-        ctx = PolicyContext(self.qm._resident_checkpoint, size, bool(scope.likeness))
+        ctx = PolicyContext(self.qm._resident_checkpoint, size, bool(scope.likeness), row["model"])
         try:
             compiled = compile_plan(plan, self.vocab, self.reg, ctx)
         except NeedsInput as e:

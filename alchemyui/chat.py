@@ -16,6 +16,7 @@ class TurnIn(BaseModel):
     thread_id: str | None = None
     text: str = Field(default="", max_length=8000)
     attachments: list[str] = Field(default_factory=list)
+    model: str | None = None      # a checkpoint from /api/models; None is Auto
 
 
 class AnswerIn(BaseModel):
@@ -55,7 +56,7 @@ async def create_turn(body: TurnIn, principal: Principal = Depends(get_principal
                       engine: ChatEngine = Depends(get_engine)):
     """Returns at once in `planning`; the rest arrives on /api/events."""
     return await _call(engine.create_turn(principal.user_id, body.text, body.attachments,
-                                          body.thread_id))
+                                          body.thread_id, body.model))
 
 
 @router.post("/turns/{turn_id}/answer")
