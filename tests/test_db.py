@@ -111,3 +111,34 @@ def test_phase7_columns_migrate_onto_an_older_db(tmp_db_path):
     assert db._conn.execute("SELECT is_likeness FROM refs WHERE id='r1'").fetchone()[0] == 1
     assert "turn_id" in _cols(db, "jobs") and "turn_id" in _cols(db, "images")
     db.close()
+
+
+# --- Phase 7.5 ---------------------------------------------------------------
+PHASE75 = {
+    "threads": {"model"},
+    "turns": {"model"},
+    "images": {"palette", "lab_run_id"},
+    "jobs": {"lane", "lab_run_id"},
+}
+
+
+def test_phase75_columns_and_tables(tmp_db_path):
+    db = Database(tmp_db_path)
+    for table, cols in PHASE75.items():
+        assert cols <= _cols(db, table), table
+    assert {"checkpoint", "settings_json", "cover_image_id", "updated_by",
+            "updated_at"} <= _cols(db, "model_profiles")
+    assert {"id", "created_by", "title", "spec_json", "state", "created_at",
+            "finished_at"} <= _cols(db, "lab_runs")
+    assert {"id", "run_id", "seq", "checkpoint", "prompt_key", "seed", "combo_json",
+            "settings_json", "job_id", "image_id", "state", "stars"} <= _cols(db, "lab_cells")
+    db.close()
+
+
+def test_phase75_migrates_an_older_db_and_jobs_default_to_the_user_lane(tmp_db_path):
+    _v1_db(tmp_db_path)
+    db = Database(tmp_db_path)
+    for table, cols in PHASE75.items():
+        assert cols <= _cols(db, table), table
+    assert db._conn.execute("SELECT lane FROM jobs WHERE id='j1'").fetchone()[0] == "user"
+    db.close()

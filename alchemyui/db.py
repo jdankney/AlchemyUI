@@ -39,6 +39,14 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE jobs ADD COLUMN turn_id TEXT",
     "ALTER TABLE images ADD COLUMN turn_id TEXT",
     "ALTER TABLE refs ADD COLUMN is_likeness INTEGER NOT NULL DEFAULT 1",
+    # Phase 7.5: the model a person pinned; the colours an image glows in; the
+    # Lab's low-priority lane and the runs its images belong to.
+    "ALTER TABLE threads ADD COLUMN model TEXT",
+    "ALTER TABLE turns ADD COLUMN model TEXT",
+    "ALTER TABLE images ADD COLUMN palette TEXT",
+    "ALTER TABLE images ADD COLUMN lab_run_id TEXT",
+    "ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'user'",
+    "ALTER TABLE jobs ADD COLUMN lab_run_id TEXT",
 ]
 
 # Indexes on migrated columns run AFTER the ALTERs: schema.sql is applied
@@ -51,6 +59,7 @@ _INDEXES: list[str] = [
     "CREATE INDEX IF NOT EXISTS ix_refs_user ON refs(user_id, created_at DESC)",
     "CREATE INDEX IF NOT EXISTS ix_jobs_turn ON jobs(turn_id)",
     "CREATE INDEX IF NOT EXISTS ix_images_turn ON images(turn_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_images_lab ON images(lab_run_id)",
 ]
 
 

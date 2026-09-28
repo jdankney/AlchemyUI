@@ -169,3 +169,68 @@ def save_upload(upload_dir: str | Path, data: bytes, stem: str, suffix: str = ".
     path = d / f"{stem}{suffix}"
     path.write_bytes(data)
     return str(path)
+
+
+# --------------------------------------------------------------------------- #
+# palette (Phase 7.5) -- the colours an image glows in
+# --------------------------------------------------------------------------- #
+def palette_of(data: bytes) -> list[str]:
+    """Three dominant colours of an image, vivid first, as "#rrggbb".
+
+    The UI glows each image in its own colours. Computing them once, when the
+    image is saved, lets that glow be a few CSS gradients rather than a live
+    blur of the picture -- which a phone would pay for on every scroll.
+    Ranked by share of the picture weighted towards saturation, so a small
+    amber sunset outranks the grey sea it sits in. Never raises: anything
+    that is not an image simply has no palette.
+    """
+    import colorsys
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        im = Image.open(io.BytesIO(data)).convert("RGB")
+    except (UnidentifiedImageError, OSError, ValueError):
+        return []
+    im.thumbnail((64, 64))
+    q = im.quantize(colors=6, method=Image.Quantize.MEDIANCUT)
+    pal = q.getpalette() or []
+    counts = q.getcolors() or []
+    total = sum(n for n, _ in counts) or 1
+    scored = []
+    for n, idx in counts:
+        r, g, b = pal[idx * 3: idx * 3 + 3]
+        _, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        scored.append(((n / total) * (0.15 + s) * (0.35 + v), (r, g, b)))
+    scored.sort(key=lambda x: -x[0])
+    colours = [c for _, c in scored][:3]
+    while colours and len(colours) < 3:
+        # A near-flat image: fill out with a darker shade of what is there.
+        r, g, b = colours[-1]
+        colours.append((r * 2 // 3, g * 2 // 3, b * 2 // 3))
+    return [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in colours]
+
+
+async def backfill_palettes(db, batch: int = 50) -> int:
+    """Give every image saved before palettes existed its colours.
+
+    Runs once at startup, off the request path. A row whose file is gone gets
+    an empty palette, so it is not retried on every boot. Returns how many
+    rows gained real colours."""
+    import asyncio
+    import json
+
+    filled = 0
+    while True:
+        rows = await db.fetch_all(
+            "SELECT id, path FROM images WHERE palette IS NULL LIMIT ?", (batch,))
+        if not rows:
+            return filled
+        for r in rows:
+            p = Path(r["path"])
+            colours: list[str] = []
+            if p.exists():
+                colours = await asyncio.to_thread(lambda p=p: palette_of(p.read_bytes()))
+            filled += bool(colours)
+            await db.execute("UPDATE images SET palette = ? WHERE id = ?",
+                             (json.dumps(colours), r["id"]))

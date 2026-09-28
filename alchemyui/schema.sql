@@ -184,6 +184,44 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS ix_turns_state ON turns(state);
 
+-- Phase 7.5: a model's tuned defaults, overlaid on the registry's at startup
+-- and whenever one changes. The registry file stays the committed baseline.
+CREATE TABLE IF NOT EXISTS model_profiles (
+    checkpoint      TEXT PRIMARY KEY,          -- registry checkpoint name
+    settings_json   TEXT NOT NULL,             -- {steps, cfg, sampler, scheduler, look, negative}
+    cover_image_id  TEXT,                      -- a lab image shown in the model menu
+    updated_by      INTEGER REFERENCES users(id),
+    updated_at      REAL NOT NULL
+);
+
+-- The Photoreal Lab: a run is a grid of settings, a cell one image of it.
+CREATE TABLE IF NOT EXISTS lab_runs (
+    id           TEXT PRIMARY KEY,
+    created_by   INTEGER NOT NULL REFERENCES users(id),
+    title        TEXT NOT NULL DEFAULT '',
+    spec_json    TEXT NOT NULL,                -- what was asked for, expanded seeds included
+    state        TEXT NOT NULL,                -- running | done | cancelled
+    created_at   REAL NOT NULL,
+    finished_at  REAL
+);
+CREATE TABLE IF NOT EXISTS lab_cells (
+    id             TEXT PRIMARY KEY,
+    run_id         TEXT NOT NULL REFERENCES lab_runs(id),
+    seq            INTEGER NOT NULL,
+    checkpoint     TEXT NOT NULL,
+    prompt_key     TEXT NOT NULL,
+    seed           INTEGER NOT NULL,
+    combo_json     TEXT NOT NULL,              -- the axis values of this cell, e.g. {"cfg": 5}
+    settings_json  TEXT NOT NULL,              -- the full profile it ran with
+    job_id         TEXT,                       -- the latest job; a preempted cell gets a new one
+    image_id       TEXT,
+    state          TEXT NOT NULL,              -- queued | done | failed | cancelled
+    stars          INTEGER NOT NULL DEFAULT 0,
+    created_at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_lab_cells_run ON lab_cells(run_id, seq);
+CREATE INDEX IF NOT EXISTS ix_lab_cells_job ON lab_cells(job_id);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

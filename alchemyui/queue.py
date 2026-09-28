@@ -31,7 +31,7 @@ from .db import Database, get_db, now
 from .meter import finalise
 from .power import GpuPowerSampler
 from .registry import Registry, WorkflowInfo, get_registry
-from .storage import output_images, png_size, save_output
+from .storage import output_images, palette_of, png_size, save_output
 
 log = logging.getLogger("alchemyui.queue")
 
@@ -73,6 +73,10 @@ class Job:
     params: dict
     user_id: int | None = None     # owner; None only for v1 rows not yet claimed
     turn_id: str | None = None     # the chat turn that asked for it; None from /api/generate
+    # "user", or "lab": the Photoreal Lab's renders, which only ever use the
+    # GPU when no person is waiting, and give it up when one arrives.
+    lane: str = "user"
+    lab_run_id: str | None = None
     id: str = field(default_factory=new_job_id)
     state: JobState = JobState.QUEUED
 
@@ -747,21 +751,25 @@ class QueueManager:
                 self.cfg.output_dir, job.id, d.get("filename", "image.png"), data
             )
             width, height = png_size(data)
+            palette = await asyncio.to_thread(palette_of, data)
             ts = now()
             await self.db.execute(
                 "INSERT INTO images (id, user_id, job_id, filename, path, width, height, seed, "
-                "  workflow_id, params_json, favorite, turn_id, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)",
+                "  workflow_id, params_json, favorite, turn_id, palette, lab_run_id, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)",
                 (image_id, job.user_id, job.id, d.get("filename", ""), path, width, height,
-                 job.params.get("seed"), job.workflow_id, params_json, job.turn_id, ts),
+                 job.params.get("seed"), job.workflow_id, params_json, job.turn_id,
+                 json.dumps(palette), job.lab_run_id, ts),
             )
             row = {
                 "id": image_id, "job_id": job.id, "width": width, "height": height,
                 "seed": job.params.get("seed"), "workflow_id": job.workflow_id,
                 "params": job.params, "favorite": False, "created_at": ts,
-                "turn_id": job.turn_id,
+                "turn_id": job.turn_id, "palette": palette,
                 "url": f"/api/images/{image_id}/file",
             }
+            if job.lab_run_id:
+                row["lab_run_id"] = job.lab_run_id
             job.images.append(row)
             await self._emit({"type": "image", "image": row}, owner=job.user_id)
         return True

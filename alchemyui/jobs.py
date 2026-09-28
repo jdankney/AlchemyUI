@@ -25,14 +25,18 @@ log = logging.getLogger("alchemyui.jobs")
 
 def image_public(r) -> dict:
     """An images row as the browser sees it."""
-    return {
+    out = {
         "id": r["id"], "job_id": r["job_id"], "width": r["width"], "height": r["height"],
         "seed": r["seed"], "workflow_id": r["workflow_id"],
         "params": json.loads(r["params_json"]), "favorite": bool(r["favorite"]),
         "tags": [t for t in (r["tags"] or "").split(",") if t],
         "turn_id": r["turn_id"],
+        "palette": json.loads(r["palette"]) if r["palette"] else [],
         "created_at": r["created_at"], "url": f"/api/images/{r['id']}/file",
     }
+    if r["lab_run_id"]:
+        out["lab_run_id"] = r["lab_run_id"]
+    return out
 
 
 def job_public(r) -> dict:

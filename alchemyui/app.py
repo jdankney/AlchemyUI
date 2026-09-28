@@ -36,7 +36,7 @@ from .jobs import JobRejected, image_as_upload, image_public, job_public, record
 from .planner.schema import Vocabulary
 from .queue import QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
-from .storage import UploadRejected, normalise_mask, save_upload
+from .storage import UploadRejected, backfill_palettes, normalise_mask, save_upload
 from .threads import build_router, start_engine, stop_engine
 
 logging.basicConfig(level=logging.INFO,
@@ -63,11 +63,14 @@ async def lifespan(app: FastAPI):
     reg = get_registry()
     router = build_router(settings, Vocabulary.from_registry(reg, settings.max_batch))
     await start_engine(get_db(), qm, reg, settings, router, comfy)
+    # Images saved before palettes existed get their colours in the background.
+    backfill = asyncio.create_task(backfill_palettes(get_db()), name="palette-backfill")
     log.info("alchemyui up on %s:%s (dev_mode=%s)",
              settings.app_bind_host, settings.port, settings.is_dev)
     try:
         yield
     finally:
+        backfill.cancel()
         await stop_engine()
         await stop_queue()
         await comfy.aclose()
