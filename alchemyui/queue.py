@@ -77,6 +77,7 @@ class Job:
     # GPU when no person is waiting, and give it up when one arrives.
     lane: str = "user"
     lab_run_id: str | None = None
+    preempted: bool = False        # a lab job interrupted so a person could go first
     id: str = field(default_factory=new_job_id)
     state: JobState = JobState.QUEUED
 
@@ -151,7 +152,7 @@ class Job:
         """What the admin page may see: no prompt, no params, no images."""
         return {
             "id": self.id, "owner": owner, "workflow_id": self.workflow_id,
-            "checkpoint": self.checkpoint, "status": self.state.value,
+            "checkpoint": self.checkpoint, "status": self.state.value, "lane": self.lane,
             "position": position, "eta_s": round(eta_s, 1) if eta_s is not None else None,
             "overall": round(self.overall, 4), "picked_at": self.picked_at,
             "started_at": self.started_at,
@@ -277,8 +278,10 @@ class QueueManager:
                 await self.comfy.interrupt(r["id"])
                 await self.comfy.drop_pending(r["id"])
 
+        # People's jobs first, then the Lab's: the lanes survive a restart.
         rows = await self.db.fetch_all(
-            "SELECT * FROM jobs WHERE status = ? ORDER BY created_at", (JobState.QUEUED.value,)
+            "SELECT * FROM jobs WHERE status = ? ORDER BY lane = 'lab', created_at",
+            (JobState.QUEUED.value,)
         )
         for r in rows:
             if self.reg.get(r["workflow_id"]) is None:
@@ -293,6 +296,8 @@ class QueueManager:
                 params=json.loads(r["params_json"]),
                 user_id=r["user_id"],
                 turn_id=r["turn_id"],
+                lane=r["lane"] or "user",
+                lab_run_id=r["lab_run_id"],
                 id=r["id"],
                 created_at=r["created_at"],
             )
@@ -402,16 +407,40 @@ class QueueManager:
 
     # -- submission / cancellation --------------------------------------------
     async def submit(self, workflow: WorkflowInfo, params: dict,
-                     user_id: int | None = None, turn_id: str | None = None) -> Job:
-        job = Job(workflow_id=workflow.key, params=params, user_id=user_id, turn_id=turn_id)
+                     user_id: int | None = None, turn_id: str | None = None,
+                     lane: str = "user", lab_run_id: str | None = None) -> Job:
+        job = Job(workflow_id=workflow.key, params=params, user_id=user_id, turn_id=turn_id,
+                  lane=lane, lab_run_id=lab_run_id)
         self._by_id[job.id] = job
-        self._pending.append(job)
+        if lane == "lab":
+            self._pending.append(job)
+        else:
+            # A person's job goes ahead of every lab job still waiting...
+            at = next((i for i, j in enumerate(self._pending) if j.lane == "lab"),
+                      len(self._pending))
+            self._pending.insert(at, job)
         await self._persist_job(job)
         self._wake.set()
         await self._broadcast()
-        log.info("job %s queued (workflow=%s user=%s pos=%d)",
-                 job.id, job.workflow_id, user_id, len(self._pending))
+        log.info("job %s queued (workflow=%s user=%s lane=%s pos=%d)",
+                 job.id, job.workflow_id, user_id, lane, self._pending.index(job))
+        if lane != "lab":
+            # ...and takes the GPU from one that is running.
+            await self._preempt_lab()
         return job
+
+    async def _preempt_lab(self) -> None:
+        """A lab render gives up the GPU the moment a person needs it: a
+        targeted interrupt, and the Lab requeues the cell behind them. The
+        partial run is metered like any other GPU time."""
+        job = self._active
+        if job is None or job.lane != "lab" or job.preempted or job.state in TERMINAL:
+            return
+        job.preempted = True
+        job.error_text = "Paused so someone's message could go first."
+        job._cancel.set()
+        await self.comfy.interrupt(job.id)
+        log.info("lab job %s preempted for a person's job", job.id)
 
     async def cancel(self, job_id: str, user_id: int | None = None) -> bool:
         """Cancel a job. With `user_id`, only its owner may -- anyone else is
@@ -484,10 +513,14 @@ class QueueManager:
         for i, j in enumerate(self._pending):
             if self._visible(j, viewer):
                 jobs.append(j.public(i + ahead, etas.get(j.id)))
+        people = [j for j in [self._active, *self._pending] if j is not None and j.lane != "lab"]
         return {
             "type": "queue",
             "jobs": jobs,
-            "depth": len(self._pending) + (1 if self._active else 0),
+            # "3 jobs in the queue" counts people's work: a lab render gives
+            # way the moment anyone arrives, so it is never in anyone's way.
+            "depth": len(people),
+            "lab_depth": len(self._pending) + (1 if self._active else 0) - len(people),
             "resident_checkpoint": self._resident_checkpoint,
             "comfy_connected": self._comfy_connected,
             "ts": now(),
@@ -579,7 +612,9 @@ class QueueManager:
         head = self._pending[0]
         run: list[Job] = []
         for job in self._pending:
-            if job.user_id != head.user_id:
+            # One owner *and* one lane: a lab job may never be promoted past
+            # its owner's own chat job.
+            if job.user_id != head.user_id or job.lane != head.lane:
                 break
             run.append(job)
 
@@ -943,8 +978,8 @@ class QueueManager:
             "INSERT INTO jobs (id, workflow_id, user_id, status, prompt_id, queue_position, "
             "  params_json, input_image_path, mask_path, error_text, error_detail, checkpoint, "
             "  steps, created_at, started_at, finished_at, picked_at, occupancy_seconds, "
-            "  gpu_watts_mean, energy_wh, rate_used, cost_usd, turn_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "  gpu_watts_mean, energy_wh, rate_used, cost_usd, turn_id, lane, lab_run_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET "
             "  status=excluded.status, queue_position=excluded.queue_position, "
             "  error_text=excluded.error_text, error_detail=excluded.error_detail, "
@@ -957,7 +992,7 @@ class QueueManager:
              json.dumps(job.params), None, None, job.error_text, job.error_detail,
              job.checkpoint, job.steps, job.created_at, job.started_at, job.finished_at,
              job.picked_at, job.occupancy_seconds, job.gpu_watts_mean, job.energy_wh,
-             job.rate_used, job.cost_usd, job.turn_id),
+             job.rate_used, job.cost_usd, job.turn_id, job.lane, job.lab_run_id),
         )
 
 

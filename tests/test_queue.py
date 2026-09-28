@@ -603,3 +603,110 @@ async def test_turn_id_survives_a_restart(tmp_db_path, tmp_output_dir):
         assert qm2._by_id[queued.id].turn_id == "t-queued"
     finally:
         await qm2.stop()
+
+
+# --- Phase 7.5: the Lab's lane --------------------------------------------------
+async def _lab(qm: QueueManager, run: str = "run1", **over):
+    w = qm.reg.require("txt2img-sdxl")
+    params = w.resolve({"prompt": "a lab cell", "steps": 4, **over})
+    return await qm.submit(w, params, lane="lab", lab_run_id=run)
+
+
+@pytest.mark.asyncio
+async def test_a_person_goes_ahead_of_every_queued_lab_job(tmp_db_path, tmp_output_dir):
+    comfy = FakeComfy()
+    comfy.mode = "hang"                 # nothing finishes: we only look at the order
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    try:
+        first = await _submit(qm)                        # holds the GPU
+        await asyncio.sleep(0.02)
+        labs = [await _lab(qm) for _ in range(3)]
+        mine = await _submit(qm)
+        assert qm._pending[0] is mine
+        assert [j.lane for j in qm._pending] == ["user", "lab", "lab", "lab"]
+        # positions and depth count people's jobs, not the Lab's
+        assert qm.position_of(mine.id) == 1
+        snap = qm.snapshot()
+        assert snap["depth"] == 2 and snap["lab_depth"] == 3
+        assert qm._active is first and labs
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_lab_job_never_overtakes_its_owners_own_message(tmp_db_path, tmp_output_dir):
+    """Swap-aware reordering stays inside one lane: a lab job on the resident
+    model must not be promoted past the admin's own chat job."""
+    comfy = FakeComfy()
+    comfy.mode = "hang"
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    try:
+        uid = await add_user(qm.db, "admin")
+        rv6 = "SD1.5/realisticVisionV60B1_v60B1VAE_pruned_fp16.safetensors"
+        xl = "SDXL/RealVisXL_V5.0_fp16.safetensors"
+        await qm._set_resident(rv6)
+        w = qm.reg.require("txt2img-sdxl")
+        blocker = await qm.submit(w, w.resolve({"prompt": "x"}, qm.reg.checkpoint(rv6)), uid)
+        await asyncio.sleep(0.02)
+        user_job = await qm.submit(w, w.resolve({"prompt": "x"}, qm.reg.checkpoint(xl)), uid)
+        lab_job = await qm.submit(w, w.resolve({"prompt": "x"}, qm.reg.checkpoint(rv6)), uid,
+                                  lane="lab", lab_run_id="r")
+        assert qm._active is blocker
+        assert qm._pick_next() is user_job
+        assert qm._pending == [lab_job]
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_person_preempts_a_running_lab_job(tmp_db_path, tmp_output_dir):
+    comfy = FakeComfy()
+    comfy.delay = 0.05
+    comfy.steps = 40                     # long enough to be caught mid-run
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    seen = []
+
+    async def listener(job):
+        seen.append((job.id, job.state, job.preempted))
+    qm.add_listener(listener)
+    try:
+        lab = await _lab(qm)
+        await asyncio.sleep(0.12)
+        assert qm._active is lab
+        mine = await _submit(qm)
+        await asyncio.wait_for(lab._done.wait(), 10)
+        assert lab.state == JobState.CANCELLED and lab.preempted
+        assert lab.id in comfy.interrupts
+        await asyncio.wait_for(mine._done.wait(), 10)
+        assert mine.state == JobState.COMPLETED
+        assert (lab.id, JobState.CANCELLED, True) in seen
+        row = await qm.db.fetch_one("SELECT lane, lab_run_id FROM jobs WHERE id = ?", (lab.id,))
+        assert (row["lane"], row["lab_run_id"]) == ("lab", "run1")
+    finally:
+        await qm.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_restart_keeps_people_ahead_of_the_lab(tmp_db_path, tmp_output_dir):
+    comfy = FakeComfy()
+    comfy.mode = "hang"
+    qm = await _make_qm(tmp_db_path, tmp_output_dir, comfy)
+    blocker = await _submit(qm)
+    await asyncio.sleep(0.02)
+    lab = await _lab(qm)
+    mine = await _submit(qm)
+    await qm.stop()
+    assert blocker
+
+    qm2 = QueueManager(qm.db, FakeComfy(), qm.reg, qm.cfg, sampler_factory=FixedSampler)
+    qm2._worker = _idle            # restore only; do not run anything
+    await qm2.start()
+    try:
+        assert [(j.id, j.lane) for j in qm2._pending] == [(mine.id, "user"), (lab.id, "lab")]
+        assert qm2._pending[1].lab_run_id == "run1"
+    finally:
+        await qm2.stop()
+
+
+async def _idle():
+    await asyncio.Event().wait()
