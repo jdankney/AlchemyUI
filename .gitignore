@@ -20,3 +20,4 @@ data/
 
 # personal notes (engineering log, anything not meant to ship)
 docs/local/
+.superpowers/

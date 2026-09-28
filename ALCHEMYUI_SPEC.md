@@ -604,6 +604,34 @@ The v1 UI keeps working throughout, now scoped per user.
   - With Llamacracy unreachable, turns still plan on the fallback and say so.
   - The router-eval report exists for both backends.
 
+### Phase 7.5 — Alchemy UI, model choice and the Photoreal Lab
+
+Added 2026-09-28 at the author's request. The design is in
+`docs/superpowers/specs/2026-09-28-alchemy-ui-models-lab-design.md`.
+
+- **The Alchemy UI:** a new visual identity (midnight, glass, a violet-to-gold
+  glow, self-hosted Sora), with images as the star. Each image glows with its
+  own palette. The Library uses justified rows, and the viewer browses with
+  arrows and swipes.
+- **The model switcher:** a pill in the composer pins a photoreal checkpoint
+  per message, and the pin sticks to the thread. The policy honours it except
+  where it would break the result (extend, SDXL-only workflows, small sources
+  on SDXL), and says why. This amends §12's "no models to choose": there is
+  still nothing technical to set, only which model paints.
+- **Profiles:** per-model overrides of steps, cfg, sampler, scheduler, a look
+  (prompt suffix) and a negative, stored in the DB and overlaid on the
+  registry.
+- **The Lab (admin):** renders a grid of settings in a preemptible
+  low-priority lane, compares same-seed results, tallies stars and adopts the
+  winner as a model's profile.
+- **Acceptance:**
+  - Every view is restyled and checked at desktop and phone widths.
+  - A pinned message uses the pinned model, and each exception is explained
+    live.
+  - A starter Lab run on real ComfyUI completes without delaying a user
+    message by more than an interrupt, and an adopted setting shows up in the
+    next pinned message.
+
 ### Phase 8 — Region-aware editing
 
 - A segmentation custom node plus model, chosen by measuring on 6GB. The
