@@ -1,11 +1,13 @@
 // AlchemyUI SPA -- vanilla JS, no build step, no framework, no CDN.
 // Served by FastAPI at /. Styling lives in styles.css (hand-written).
 //
-// Design brief (spec section 12): one prompt box, like ChatGPT. You type,
-// optionally attach images, and get images back in a conversation. No modes,
-// samplers or models to choose. Waits are minute-scale, so never a bare
-// spinner: every turn says in plain words what is happening, then where its
-// jobs are (queue position, then steps, elapsed and ETA, then a preview).
+// Design brief (spec section 12, Phase 7.5): one prompt box, like ChatGPT.
+// You type, optionally attach images, and get images back in a conversation.
+// The pictures are the star: they take the thread's width and glow in their
+// own colours. The only choice beyond words is which model paints -- Auto, or
+// a pinned one from the pill in the prompt box. Waits are minute-scale, so
+// never a bare spinner: every turn says in plain words what is happening,
+// then where its jobs are, inside a frame the shape of the picture to come.
 const $app = document.getElementById('app');
 
 /* ------------------------------------------------------------------ api */
@@ -54,8 +56,9 @@ const ICONS = {
   stop: 'M7 7h10v10H7z',
   x: 'M18 6L6 18M6 6l12 12',
   chevron: 'M6 9l6 6 6-6',
+  left: 'M15 18l-6-6 6-6',
+  right: 'M9 18l6-6-6-6',
   down: 'M12 5v14M19 12l-7 7-7-7',
-  alert: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01',
   trash: 'M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6',
   redo: 'M3 12a9 9 0 1 0 2.6-6.4M3 4v5h5',
   image: 'M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM8.5 10.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0zM22 15l-5-5L6 19',
@@ -65,9 +68,13 @@ const ICONS = {
   menu: 'M3 6h18M3 12h18M3 18h18',
   settings: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
   shield: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
+  flask: 'M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3M7.5 15h9',
   logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
   face: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM8.5 10h.01M15.5 10h.01M8.5 15a5 5 0 0 0 7 0',
   corner: 'M9 14l-5-5 5-5M20 20v-7a4 4 0 0 0-4-4H4',
+  info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01',
+  copy: 'M9 9h11v11H9zM5 15H4V4h11v1',
+  check: 'M20 6L9 17l-5-5',
 };
 const icon = (name, cls = '') => {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -81,17 +88,43 @@ const icon = (name, cls = '') => {
 const fmtDur = s => s < 60 ? `${Math.round(s)}s`
   : s < 3600 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s`
   : `${(s / 3600).toFixed(1)}h`;
+const fmtEta = s => s == null ? '' : s < 60 ? `~${Math.max(1, Math.round(s))} s` : `~${Math.round(s / 60)} min`;
 const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const shortCkpt = c => (c || '').split('/').pop().replace(/\.(safetensors|ckpt|pt)$/, '');
 const fmtMoney = n => (n > 0 && n < 0.0001) ? '<$0.0001' : '$' + (n || 0).toFixed(n >= 1 ? 2 : 4);
 const fmtKwh = n => (n > 0 && n < 0.001) ? '<0.001' : (n || 0).toFixed(3);
-const ago = ts => {
-  const s = Date.now() / 1000 - ts;
-  return s < 60 ? 'now' : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h`
-    : `${Math.floor(s / 86400)}d`;
-};
 const LIVE = new Set(['queued', 'running']);
 const BUSY_TURN = new Set(['planning', 'queued']);
+const glow = pal => pal && pal.length ? `--c1:${pal[0]};--c2:${pal[1] || pal[0]};--c3:${pal[2] || pal[0]}` : '';
+const ratio = (w, h) => (w && h) ? `aspect-ratio:${w} / ${h}` : 'aspect-ratio:1 / 1';
+const modelLabel = name => (S.models.find(m => m.name === name) || {}).label || shortCkpt(name);
+
+// "Today", "Yesterday", a weekday within the week, else a date.
+function dayLabel(ts) {
+  const d = new Date(ts * 1000), today = new Date();
+  const start = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((start(today) - start(d)) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short',
+                                           year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+function groupByDay(items, key) {
+  const out = [];
+  for (const it of items) {
+    const label = dayLabel(it[key]);
+    if (!out.length || out[out.length - 1].label !== label) out.push({ label, items: [] });
+    out[out.length - 1].items.push(it);
+  }
+  return out;
+}
+
+// localStorage is a convenience here, never a record: any failure is ignored.
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* private mode */ } },
+};
 
 /* ----------------------------------------------------------------- state */
 const S = {
@@ -106,12 +139,16 @@ const S = {
   previews: {},            // job id -> object URL of the latest preview frame
   connected: false,
   comfyConnected: true,
-  depth: 0,                // jobs in the queue, everyone's
+  depth: 0,                // people's jobs in the queue, everyone's
+  resident: null,          // the checkpoint ComfyUI is believed to hold
+  models: [],              // the model menu, from /api/models
+  model: store.get('alchemy.model') || null,   // the pin: a checkpoint, or null for Auto
+  modelMenu: false,
   draft: { text: '', atts: [] },   // atts: {id, url, busy}
   sending: false,
-  lib: { images: [], q: '', fav: false, done: false, loading: false },
+  lib: { images: [], q: '', fav: false, model: '', done: false, loading: false },
   refs: [], refsBusy: false, usage: null,
-  lightbox: null,
+  viewer: null,            // {items: [image], i}
   drawer: false,           // the rail, on a phone
   menu: false,             // the account menu
 };
@@ -135,7 +172,7 @@ function parseRoute() {
 
 async function route() {
   const r = parseRoute();
-  S.view = r.view; S.drawer = false; S.menu = false;
+  S.view = r.view; S.drawer = false; S.menu = false; S.modelMenu = false;
   if (r.view === 'chat' && (r.id !== S.threadId || (r.id && !S.thread))) {
     await openThread(r.id);
     return;
@@ -160,6 +197,8 @@ async function openThread(id) {
     const d = await api.get(`/api/threads/${encodeURIComponent(id)}`);
     if (S.threadId !== id) return;
     S.thread = d.thread; S.turns = d.turns.map(remember);
+    // a thread remembers the model it was last pinned to
+    setModel(d.thread.model || null, false);
   } catch (e) {
     if (S.threadId !== id) return;
     S.threadError = e.status === 404
@@ -173,6 +212,21 @@ async function openThread(id) {
 async function loadThreads() {
   try { S.threads = (await api.get('/api/threads')).threads; renderRail(); }
   catch { /* the rail stays as it was */ }
+}
+
+async function loadModels() {
+  try {
+    const d = await api.get('/api/models');
+    S.models = d.models; S.resident = d.resident;
+    // a pin for a model that has left the menu falls back to Auto
+    if (S.model && !S.models.some(m => m.name === S.model)) setModel(null);
+    renderTools(); renderHead();
+  } catch { /* the pill still works as Auto */ }
+}
+
+function setModel(name, remember = true) {
+  S.model = name || null;
+  if (remember) store.set('alchemy.model', S.model);
 }
 
 /* --------------------------------------------------------- SSE: one stream */
@@ -243,6 +297,9 @@ function onTurn(d) {
 
 function onQueue(d) {
   S.comfyConnected = d.comfy_connected; S.depth = d.depth;
+  if (d.resident_checkpoint !== undefined && d.resident_checkpoint !== S.resident) {
+    S.resident = d.resident_checkpoint; renderHead();
+  }
   const touched = new Set();
   for (const qj of d.jobs) {
     const t = turnOf(qj.id);
@@ -302,8 +359,11 @@ function releasePreview(jobId) {
 
 function onImage(d) {
   const img = d.image;
-  if (S.lib.images.length && !S.lib.q && !S.lib.fav && !S.lib.images.some(x => x.id === img.id)) {
-    S.lib.images.unshift(img);
+  if (img.lab_run_id) return;           // the Lab's test renders are not your pictures
+  const L = S.lib;
+  if (L.images.length && !L.q && !L.fav && (!L.model || img.params?.checkpoint === L.model)
+      && !L.images.some(x => x.id === img.id)) {
+    L.images.unshift(img);
     if (S.view === 'library') render();
   }
   const t = S.turns.find(x => x.id === img.turn_id);
@@ -319,15 +379,17 @@ function render() {
       rail(),
       h('div', { class: 'scrim', onclick: () => { S.drawer = false; render(); } }),
       h('main', { class: 'main' }, mobileTop(), mainView())),
-    S.lightbox ? lightbox() : null,
+    S.viewer ? viewer() : null,
     h('div', { class: 'toasts', id: 'toasts' }));
 }
 const swap = (id, el) => { const old = document.getElementById(id); if (old) old.replaceWith(el); };
 function renderRail() { swap('rail', rail()); }
 function renderStatus() { swap('status', statusBadge()); }
+function renderHead() { swap('chat-head', chatHead()); }
 function renderTools() {
   const el = document.getElementById('compose-tools'); if (el) el.replaceChildren(...toolKids());
   const ta = document.getElementById('prompt'); if (ta) ta.placeholder = placeholder();
+  swap('model-menu-slot', modelMenuSlot());
 }
 function renderAtts() { const el = document.getElementById('atts'); if (el) el.replaceChildren(...attKids()); }
 function renderThread() {
@@ -355,20 +417,20 @@ function stickToBottom(yes) {
 
 /* -------------------------------------------------------------------- rail */
 function rail() {
+  const groups = groupByDay(S.threads, 'updated_at');
   return h('nav', { class: 'rail', id: 'rail', 'aria-label': 'Conversations' },
     h('div', { class: 'rail-top' },
       h('a', { class: 'brand', href: '#/', onclick: e => { e.preventDefault(); newChat(); } },
-        h('img', { src: '/assets/alchemyui-favicon.svg', alt: '' }),
-        h('span', { class: 'wordmark' }, 'AlchemyUI')),
+        h('span', { class: 'mark' }, icon('sparkle')),
+        h('span', { class: 'wordmark grad-text' }, 'AlchemyUI')),
       h('div', { class: 'spacer' }),
       h('button', { class: 'btn btn-ghost btn-icon rail-close', title: 'Close',
                     onclick: () => { S.drawer = false; render(); } }, icon('x', 'icon-sm'))),
-    h('button', { class: 'btn rail-new', onclick: newChat }, icon('plus', 'icon-sm'), 'New chat'),
+    h('button', { class: 'btn btn-glow rail-new', onclick: newChat }, icon('plus', 'icon-sm'), 'New chat'),
     h('a', { class: 'rail-link' + (S.view === 'library' ? ' is-active' : ''), href: '#/library' },
       icon('image', 'icon-sm'), 'Library'),
-    h('div', { class: 'rail-label' }, 'Conversations'),
     h('div', { class: 'threads' },
-      S.threads.length ? S.threads.map(threadLink)
+      S.threads.length ? groups.map(g => [h('div', { class: 'rail-label' }, g.label), g.items.map(threadLink)])
         : h('p', { class: 'rail-empty' }, 'Your conversations will appear here.')),
     h('div', { class: 'rail-foot' }, statusBadge(), account()));
 }
@@ -376,8 +438,10 @@ function rail() {
 function threadLink(t) {
   const active = S.view === 'chat' && S.threadId === t.id;
   return h('div', { class: 'thread-link' + (active ? ' is-active' : '') },
-    h('a', { href: '#/t/' + encodeURIComponent(t.id), title: t.title }, t.title || 'Untitled'),
-    h('span', { class: 'when' }, ago(t.updated_at)),
+    h('a', { href: '#/t/' + encodeURIComponent(t.id), title: t.title },
+      h('span', { class: 'thumb' }, t.cover_url ? h('img', { src: t.cover_url, alt: '', loading: 'lazy' })
+        : icon('sparkle', 'icon-sm')),
+      h('span', { class: 'title' }, t.title || 'Untitled')),
     h('button', { class: 'del', title: 'Delete conversation', 'aria-label': 'Delete conversation',
                   onclick: () => deleteThread(t) }, icon('trash', 'icon-sm')));
 }
@@ -400,6 +464,7 @@ function account() {
       h('span', { class: 'account-name' }, name), icon('chevron', 'icon-sm')),
     S.menu ? h('div', { class: 'menu', role: 'menu' },
       h('a', { href: '#/settings', role: 'menuitem' }, icon('settings', 'icon-sm'), 'Settings'),
+      S.me?.is_admin ? h('a', { href: '/lab', role: 'menuitem' }, icon('flask', 'icon-sm'), 'Photoreal Lab') : null,
       S.me?.is_admin ? h('a', { href: '/admin', role: 'menuitem' }, icon('shield', 'icon-sm'), 'Admin') : null,
       h('a', { href: '/oauth2/sign_out', role: 'menuitem' }, icon('logout', 'icon-sm'), 'Sign out')) : null);
 }
@@ -415,10 +480,19 @@ function mobileTop() {
       icon('plus', 'icon-sm')));
 }
 
+function chatHead() {
+  const loaded = S.resident ? modelLabel(S.resident) : null;
+  return h('div', { class: 'chat-head', id: 'chat-head' },
+    h('span', { class: 'title' }, S.thread?.title || ''),
+    h('div', { class: 'spacer' }),
+    loaded ? h('span', { class: 'mono', title: 'The model in memory right now: no load wait' }, `${loaded} loaded`) : null);
+}
+
 function mainView() {
   if (S.view === 'library') return libraryView();
   if (S.view === 'settings') return settingsView();
   return h('div', { class: 'chat' },
+    chatHead(),
     h('div', { class: 'chat-scroll', id: 'scroll' },
       h('div', { class: 'wrap thread', id: 'thread' }, threadKids())),
     composer());
@@ -428,19 +502,21 @@ function mainView() {
 const EXAMPLES = [
   'A spooky lighthouse at night',
   'Snowy forest during a snowstorm',
+  'Two cats on a neon city balcony',
   'Me as an astronaut',
 ];
 
 function threadKids() {
   if (S.threadError) return [h('div', { class: 'empty-note' }, S.threadError)];
-  if (S.threadId && !S.thread) return [h('div', { class: 'loading' }, h('i', { class: 'pulse' }), 'Loading…')];
+  if (S.threadId && !S.thread) return [h('div', { class: 'loading' }, h('i', { class: 'spinner' }), 'Loading…')];
   if (!S.turns.length) {
     return [h('div', { class: 'welcome' },
+      h('div', { class: 'orb' }, icon('sparkle')),
       h('h1', {}, 'What should we make?'),
-      h('p', { class: 'muted' }, 'Describe an image, or attach a photo and say what to change.'),
+      h('p', {}, 'Describe an image, or attach a photo and say what to change.'),
       h('div', { class: 'examples' }, EXAMPLES.map(x => h('button', {
-        class: 'btn', onclick: () => { S.draft.text = x; const ta = document.getElementById('prompt');
-          if (ta) { ta.value = x; ta.focus(); } renderTools(); },
+        class: 'pill', onclick: () => { S.draft.text = x; const ta = document.getElementById('prompt');
+          if (ta) { ta.value = x; ta.focus(); autosize(ta); } renderTools(); },
       }, x))))];
   }
   return S.turns.map(turnEl);
@@ -463,8 +539,10 @@ function userMsg(t) {
 function botMsg(t) {
   const live = t.jobs.filter(j => LIVE.has(j.status));
   const failed = t.state === 'failed' ? t.jobs.find(j => j.error_detail) : null;
+  const n = t.images.length + live.length;
   return h('div', { class: 'msg-bot' },
     chip(t),
+    t.note ? h('div', { class: 'note' }, icon('info', 'icon-sm'), t.note) : null,
     S.open.has(t.id) ? planDetails(t) : null,
     t.answers.map(a => h('div', { class: 'qa' }, icon('corner', 'icon-sm'),
       h('span', { class: 'muted' }, a.question), h('b', {}, a.answer))),
@@ -473,9 +551,9 @@ function botMsg(t) {
       : t.state === 'cancelled' ? h('div', { class: 'reply muted' }, 'Stopped.') : null,
     failed ? h('details', { class: 'tech' }, h('summary', {}, 'Technical details'),
       h('pre', {}, failed.error_detail)) : null,
-    live.length ? h('div', { class: 'grid grid-turn' }, live.map(jobCard)) : null,
-    t.images.length ? h('div', { class: 'grid grid-turn' },
-      t.images.map((img, i) => imageCard(img, t.images.length > 1 ? String(i + 1) : null))) : null);
+    n ? h('div', { class: `gallery n-${Math.min(n, 4)}` },
+      t.images.map((img, i) => picture(img, t.images.length > 1 ? String(i + 1) : null)),
+      live.map(jobFrame)) : null);
 }
 
 function chip(t) {
@@ -506,14 +584,18 @@ const SOURCE = {
 };
 
 function planDetails(t) {
-  const p = t.plan || {}, c = t.compiled || {};
+  const p = t.plan || {}, c = t.compiled || {}, raw = c.raw || {};
   const seeds = [...new Set(t.jobs.map(j => j.params?.seed).filter(s => s != null))];
+  // the model's look is whatever the policy appended to the planner's words
+  const look = raw.prompt && p.prompt && raw.prompt.startsWith(p.prompt + ', ')
+    ? raw.prompt.slice(p.prompt.length + 2) : '';
   const row = (label, val, mono) => val == null || val === '' ? null
     : h('div', { class: 'kv' }, h('span', { class: 'k' }, label), h('span', { class: 'v' + (mono ? ' mono' : '') }, String(val)));
-  return h('div', { class: 'plan' },
+  return h('div', { class: 'plan glass' },
     row('Prompt', p.prompt, true),
-    row('Avoiding', p.negative, true),
-    row('Model', t.model || shortCkpt(c.checkpoint)),
+    row('Look', look, true),
+    row('Avoiding', raw.negative ?? p.negative, true),
+    row('Model', (t.model || shortCkpt(c.checkpoint)) + (t.pin ? (t.pin === c.checkpoint ? ' · your pick' : ` · you picked ${modelLabel(t.pin)}`) : ' · picked for you')),
     row(seeds.length > 1 ? 'Seeds' : 'Seed', seeds.join(', '), true),
     row('Planned by', (SOURCE[t.plan_source] || t.plan_source || '')
       + (t.router_ms ? ` in ${fmtDur(t.router_ms / 1000)}` : '')),
@@ -523,16 +605,16 @@ function planDetails(t) {
 
 function question(t) {
   const q = t.question || { question: t.reply, options: [] };
-  return h('div', { class: 'question' },
+  return h('div', { class: 'question glass' },
     h('div', { class: 'q' }, q.question),
     q.options.length ? h('div', { class: 'q-opts' }, q.options.map((o, i) =>
       h('button', { class: 'btn btn-sm', onclick: () => answer(t, { option: i }) }, o))) : null,
     h('div', { class: 'small faint' }, q.options.length ? 'Or type an answer below.' : 'Type your answer below.'));
 }
 
-// A job in flight -- never a bare spinner. The card says exactly where it
-// is: queue position, then steps, then elapsed and a learned ETA.
-function jobCard(job) {
+// A job in flight -- never a bare spinner. A frame the shape of the picture
+// it will become, holding the live preview, the step and a learned ETA.
+function jobFrame(job) {
   const p = job.progress || { value: 0, max: 0 };
   const stepping = job.status === 'running' && p.max > 0;
   const pct = stepping ? Math.round(100 * (p.overall > 0 ? p.overall : p.value / p.max)) : 0;
@@ -549,31 +631,36 @@ function jobCard(job) {
   }
   const elapsed = job.started_at ? Date.now() / 1000 - job.started_at : null;
   const preview = S.previews[job.id];
-  return h('div', { class: 'card card-job' + (preview ? ' has-preview' : ''), id: 'job-' + job.id },
+  const w = job.params?.width, hgt = job.params?.height;
+  return h('div', { class: 'frame', id: 'job-' + job.id, style: ratio(w, hgt) },
     preview ? h('img', { class: 'job-preview', src: preview, alt: 'Preview of the image being made' }) : null,
-    h('div', { class: 'state' }, h('i', { class: 'pulse' }), h('span', {}, state)),
-    h('div', { class: 'bar' + (stepping ? '' : ' indet') }, h('i', { style: stepping ? `width:${pct}%` : '' })),
-    h('div', { class: 'meta' },
-      elapsed != null ? h('span', { title: 'Elapsed' }, fmtDur(elapsed)) : null,
-      job.eta_s != null ? h('span', { class: 'faint', title: 'Estimated time remaining, learned from earlier runs' },
-        `~${fmtDur(job.eta_s)} left`) : null));
+    h('div', { class: 'job-over glass' },
+      h('div', { class: 'state' }, h('i', { class: 'pulse' }), h('span', {}, state)),
+      h('div', { class: 'bar' + (stepping ? '' : ' indet') }, h('i', { style: stepping ? `width:${pct}%` : '' })),
+      h('div', { class: 'meta' },
+        elapsed != null ? h('span', { title: 'Elapsed' }, fmtDur(elapsed)) : null,
+        job.eta_s != null ? h('span', { title: 'Estimated time remaining, learned from earlier runs' },
+          `~${fmtDur(job.eta_s)} left`) : null)));
 }
 
-function imageCard(img, n) {
-  return h('div', { class: 'card img-card' },
-    h('img', {
-      src: img.url, alt: img.params?.prompt || 'Generated image', loading: 'lazy',
-      width: img.width || undefined, height: img.height || undefined,
-      onclick: () => { S.lightbox = img; render(); },
-    }),
-    n ? h('span', { class: 'img-n', title: `Image ${n}` }, n) : null,
-    h('div', { class: 'card-foot' },
-      favButton(img),
-      h('button', { class: 'btn btn-ghost btn-sm', title: 'Attach to your next message',
-                    onclick: () => useInNext(img) }, icon('clip', 'icon-sm'), 'Use'),
-      h('div', { class: 'spacer' }),
-      h('a', { class: 'btn btn-ghost btn-sm', href: img.url, download: `alchemyui-${img.seed ?? img.id}.png`,
-               title: 'Download' }, icon('down', 'icon-sm'))));
+// One finished image: its own glow behind it, its actions on hover.
+function picture(img, n) {
+  const open = () => {
+    const items = S.turns.flatMap(x => x.images);
+    S.viewer = { items, i: Math.max(0, items.findIndex(x => x.id === img.id)) }; render();
+  };
+  return h('figure', { class: 'pic', style: glow(img.palette) },
+    h('div', { class: 'halo' }),
+    h('div', { class: 'ph', style: ratio(img.width, img.height) },
+      h('img', { src: img.url, alt: img.params?.prompt || 'Generated image', loading: 'lazy',
+                 width: img.width || undefined, height: img.height || undefined, onclick: open }),
+      n ? h('span', { class: 'img-n', title: `Image ${n}` }, n) : null,
+      h('div', { class: 'pic-acts' },
+        favButton(img),
+        h('button', { title: 'Use in your next message', 'aria-label': 'Use in your next message',
+                      onclick: e => { e.stopPropagation(); useInNext(img); } }, icon('clip', 'icon-sm')),
+        h('a', { href: img.url, download: `alchemyui-${img.seed ?? img.id}.png`, title: 'Download',
+                 'aria-label': 'Download', onclick: e => e.stopPropagation() }, icon('down', 'icon-sm')))));
 }
 
 function favButton(img) {
@@ -588,7 +675,7 @@ function favButton(img) {
 /* ---------------------------------------------------------------- composer */
 function placeholder() {
   if (pendingQuestion()) return 'Type your answer…';
-  return S.turns.length ? 'Ask for a change, or something new…' : 'Describe an image, or attach one to change…';
+  return S.turns.length ? 'Ask for a change, or something new…' : 'Describe an image, or drop one here…';
 }
 
 function composer() {
@@ -600,11 +687,10 @@ function composer() {
     ondrop: e => { e.preventDefault(); e.currentTarget.classList.remove('is-over');
       attachFiles([...(e.dataTransfer?.files || [])]); },
   },
-  h('div', { class: 'compose-card' },
+  modelMenuSlot(),
+  h('div', { class: 'compose-card glass' },
     h('div', { class: 'draft-atts', id: 'atts' }, attKids()),
     h('div', { class: 'compose-row' },
-      h('button', { class: 'btn btn-ghost btn-icon', type: 'button', title: 'Attach images (up to 4)',
-                    onclick: () => document.getElementById('file')?.click() }, icon('clip')),
       h('textarea', {
         id: 'prompt', rows: 1, placeholder: placeholder(), value: S.draft.text,
         'aria-label': 'Message',
@@ -631,16 +717,55 @@ function attKids() {
                   onclick: () => { S.draft.atts.splice(i, 1); renderAtts(); renderTools(); } }, icon('x', 'icon-sm'))));
 }
 
+function modelPill() {
+  const label = S.model ? modelLabel(S.model) : 'Auto';
+  return h('button', {
+    class: 'pill model-pill' + (S.model ? ' is-pinned' : ''), type: 'button',
+    title: 'Which model paints: Auto lets the planner pick', 'aria-haspopup': 'menu',
+    'aria-expanded': S.modelMenu ? 'true' : 'false',
+    onclick: () => { S.modelMenu = !S.modelMenu; renderTools(); if (S.modelMenu) loadModels(); },
+  }, icon('sparkle', 'icon-sm'), h('span', { class: 'lbl' }, label), icon('chevron', 'icon-sm'));
+}
+
 function toolKids() {
   const running = busyTurn();
+  const attach = h('button', { class: 'btn btn-ghost btn-icon', type: 'button', title: 'Attach images (up to 4)',
+                               onclick: () => document.getElementById('file')?.click() }, icon('clip'));
   if (running && !S.draft.text.trim() && !S.draft.atts.length) {
-    return [h('button', { class: 'btn btn-icon btn-stop', type: 'button', title: 'Stop',
-                          onclick: () => cancelTurn(running) }, icon('stop'))];
+    return [modelPill(), attach, h('button', { class: 'btn btn-icon btn-stop', type: 'button', title: 'Stop',
+                                               onclick: () => cancelTurn(running) }, icon('stop'))];
   }
   const empty = !S.draft.text.trim() && !S.draft.atts.length;
   const uploading = S.draft.atts.some(a => a.busy);
-  return [h('button', { class: 'btn btn-primary btn-icon', type: 'submit', title: 'Send',
-                        disabled: empty || uploading || S.sending }, icon('send'))];
+  return [modelPill(), attach, h('button', { class: 'btn btn-primary btn-icon', type: 'submit', title: 'Send',
+                                             disabled: empty || uploading || S.sending }, icon('send'))];
+}
+
+// The model menu: a popover by the pill, a bottom sheet on a phone (CSS).
+function modelMenuSlot() {
+  if (!S.modelMenu) return h('div', { id: 'model-menu-slot', hidden: true });
+  const close = () => { S.modelMenu = false; renderTools(); };
+  const pick = name => { setModel(name); close(); focusComposer(); };
+  const item = (name, cover, title, sub, right) => h('button', {
+    class: 'mm-item' + ((S.model || null) === name ? ' is-on' : ''), type: 'button', role: 'menuitemradio',
+    'aria-checked': (S.model || null) === name ? 'true' : 'false', onclick: () => pick(name),
+  }, cover, h('div', {}, h('div', { class: 'mm-name' }, title), h('div', { class: 'mm-sub' }, sub)),
+  h('div', { class: 'mm-right' }, right));
+  return h('div', { id: 'model-menu-slot' },
+    h('div', { class: 'sheet-scrim', onclick: close }),
+    h('div', { class: 'model-menu', role: 'menu', 'aria-label': 'Model' },
+      h('div', { class: 'mm-grab' }),
+      h('div', { class: 'mm-head' }, 'Which model paints'),
+      item(null, h('span', { class: 'mm-cover auto' }, icon('sparkle', 'icon-sm')),
+        'Auto', 'The planner picks for each message', !S.model ? icon('check', 'icon-sm') : ''),
+      h('div', { class: 'mm-sep' }),
+      S.models.length ? S.models.map(m => item(m.name,
+        h('span', { class: 'mm-cover mono-' + m.family },
+          m.cover_url ? h('img', { src: m.cover_url, alt: '', loading: 'lazy' }) : m.label[0]),
+        m.label, m.tagline,
+        [m.resident ? h('span', { class: 'loaded' }, 'loaded') : null,
+         m.resident ? h('br') : null, fmtEta(m.eta_s)]))
+        : h('div', { class: 'mm-sub', style: 'padding:8px 10px' }, 'Loading models…')));
 }
 
 function autosize(ta) {
@@ -661,7 +786,7 @@ async function send() {
   if (S.sending || (!text && !S.draft.atts.length)) return;
   if (S.draft.atts.some(a => a.busy)) { toast('Still uploading…'); return; }
   const q = pendingQuestion();
-  S.sending = true; renderTools();
+  S.sending = true; S.modelMenu = false; renderTools();
   try {
     if (q && !S.draft.atts.length) {
       // Typing while the planner is waiting on you answers it.
@@ -669,11 +794,11 @@ async function send() {
       renderTurn(q.id);
     } else {
       const t = await api.post('/api/turns', {
-        thread_id: S.threadId, text, attachments: S.draft.atts.map(a => a.id),
+        thread_id: S.threadId, text, attachments: S.draft.atts.map(a => a.id), model: S.model,
       });
       if (!S.threadId) {
         S.threadId = t.thread_id;
-        S.thread = { id: t.thread_id, title: text.slice(0, 60) || 'Images' };
+        S.thread = { id: t.thread_id, title: text.slice(0, 60) || 'Images', model: S.model };
         location.hash = '#/t/' + encodeURIComponent(t.thread_id);
       }
       upsertTurn(t);
@@ -707,7 +832,7 @@ async function useInNext(img) {
   try {
     const up = await api.post(`/api/images/${img.id}/reuse`);
     S.draft.atts.push({ id: up.id, url: up.url, busy: false });
-    S.lightbox = null;
+    S.viewer = null;
     if (S.view !== 'chat') location.hash = S.threadId ? '#/t/' + encodeURIComponent(S.threadId) : '#/';
     render(); focusComposer();
   } catch (e) { toast(e.message, true); }
@@ -736,12 +861,12 @@ async function deleteThread(t) {
 async function toggleFavorite(img) {
   try {
     const updated = await api.patch(`/api/images/${img.id}`, { favorite: !img.favorite });
-    for (const list of [S.lib.images, ...S.turns.map(t => t.images)]) {
+    for (const list of [S.lib.images, ...S.turns.map(t => t.images), S.viewer?.items || []]) {
       for (const x of list) if (x.id === img.id) x.favorite = updated.favorite;
     }
     img.favorite = updated.favorite;
     if (S.lib.fav && !img.favorite) S.lib.images = S.lib.images.filter(i => i.id !== img.id);
-    if (S.view === 'chat' && !S.lightbox) { const t = S.turns.find(x => x.id === img.turn_id); if (t) renderTurn(t.id); }
+    if (S.view === 'chat' && !S.viewer) { const t = S.turns.find(x => x.id === img.turn_id); if (t) renderTurn(t.id); }
     else render();
   } catch (e) { toast(e.message, true); }
 }
@@ -751,8 +876,20 @@ async function delImage(img) {
     await api.del('/api/images/' + img.id);
     S.lib.images = S.lib.images.filter(i => i.id !== img.id);
     for (const t of S.turns) t.images = t.images.filter(i => i.id !== img.id);
-    S.lightbox = null; render();
+    S.viewer = null; render();
   } catch (e) { toast(e.message, true); }
+}
+// The Clipboard API needs a secure context, and this app is served over
+// plain HTTP on a private network -- so fall back to the old selection copy.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); }
+    else {
+      const ta = h('textarea', { style: 'position:fixed;opacity:0' }); ta.value = text;
+      document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    toast('Prompt copied.');
+  } catch { toast('Could not copy here.', true); }
 }
 
 /* ----------------------------------------------------------------- library */
@@ -765,6 +902,7 @@ async function loadLibrary(reset) {
   const q = new URLSearchParams({ limit: '60' });
   if (L.q.trim()) q.set('q', L.q.trim());
   if (L.fav) q.set('favorite', 'true');
+  if (L.model) q.set('checkpoint', L.model);
   if (!reset && L.images.length) q.set('before', String(L.images[L.images.length - 1].created_at));
   try {
     const got = (await api.get('/api/images?' + q)).images;
@@ -774,22 +912,58 @@ async function loadLibrary(reset) {
   L.loading = false; render();
 }
 
+// Justified rows: every image keeps its real shape and each full row fills
+// the width, as in a photo library. Heights come from the images' own
+// aspect ratios, so nothing is cropped more than the gap between them.
+function justify(images, width, target, gap = 6) {
+  const rows = [];
+  let row = [], sum = 0;
+  for (const img of images) {
+    const a = (img.width && img.height) ? img.width / img.height : 1;
+    row.push({ img, a }); sum += a;
+    const h = (width - gap * (row.length - 1)) / sum;
+    if (h <= target) { rows.push({ items: row, h }); row = []; sum = 0; }
+  }
+  if (row.length) rows.push({ items: row, h: Math.min(target, (width - gap * (row.length - 1)) / sum) });
+  return rows;
+}
+function libWidth() {
+  const w = window.innerWidth || 1280;
+  const rail = w > 820 ? 264 : 0, pad = w > 720 ? 48 : 28;
+  return Math.max(260, Math.min(w - rail, 1280) - pad);
+}
+
 function libraryView() {
   const L = S.lib;
+  const width = libWidth(), target = (window.innerWidth || 1280) > 720 ? 230 : 140;
+  const open = img => { S.viewer = { items: L.images, i: L.images.findIndex(x => x.id === img.id) }; render(); };
   return h('div', { class: 'page' }, h('div', { class: 'wrap wide' },
     h('div', { class: 'page-head' },
       h('h1', {}, 'Library'),
+      h('button', { class: 'pill' + (!L.fav ? ' is-on' : ''), onclick: () => { L.fav = false; loadLibrary(true); } }, 'All'),
+      h('button', { class: 'pill' + (L.fav ? ' is-on' : ''), 'aria-pressed': String(L.fav),
+                    onclick: () => { L.fav = true; loadLibrary(true); } }, icon('star', 'icon-sm'), 'Favourites'),
+      h('select', { class: 'select', style: 'width:auto;border-radius:999px;padding-top:6px;padding-bottom:6px',
+                    'aria-label': 'Model', onchange: e => { L.model = e.target.value; loadLibrary(true); } },
+        h('option', { value: '' }, 'Any model'),
+        S.models.map(m => h('option', { value: m.name, selected: L.model === m.name }, m.label))),
       h('div', { class: 'spacer' }),
       h('label', { class: 'search' }, icon('search', 'icon-sm'),
-        h('input', { class: 'input', type: 'search', placeholder: 'Search prompts', value: L.q,
+        h('input', { class: 'input', type: 'search', placeholder: 'Search prompts…', value: L.q,
                      'aria-label': 'Search prompts',
                      oninput: e => { L.q = e.target.value; clearTimeout(_libTimer);
-                       _libTimer = setTimeout(() => loadLibrary(true), 250); } })),
-      h('button', { class: 'btn btn-sm' + (L.fav ? ' is-on' : ''), 'aria-pressed': String(L.fav),
-                    onclick: () => { L.fav = !L.fav; loadLibrary(true); } }, icon('star', 'icon-sm'), 'Favourites')),
-    L.images.length ? h('div', { class: 'grid' }, L.images.map(img => imageCard(img, null)))
+                       _libTimer = setTimeout(() => loadLibrary(true), 250); } }))),
+    L.images.length ? h('div', { id: 'lib' }, groupByDay(L.images, 'created_at').map(g => [
+      h('div', { class: 'lib-day' }, `${g.label} · ${g.items.length}`),
+      justify(g.items, width, target).map(r => h('div', { class: 'jrow', style: `height:${Math.round(r.h)}px` },
+        r.items.map(({ img, a }) => h('div', {
+          class: 'jitem', style: `width:${Math.floor(r.h * a)}px`, role: 'button', tabindex: '0',
+          'aria-label': img.params?.prompt || 'Image', onclick: () => open(img),
+          onkeydown: e => { if (e.key === 'Enter') open(img); },
+        }, h('img', { src: img.url, alt: img.params?.prompt || 'Generated image', loading: 'lazy' }),
+        img.favorite ? h('span', { class: 'fav-dot' }, icon('star', 'icon-sm')) : null))))]))
       : h('div', { class: 'empty-note' }, L.loading ? 'Loading…'
-        : L.q || L.fav ? 'Nothing matches.' : 'Nothing here yet. Your images will collect here.'),
+        : L.q || L.fav || L.model ? 'Nothing matches.' : 'Nothing here yet. Your images will collect here.'),
     !L.done && L.images.length ? h('div', { class: 'more' },
       h('button', { class: 'btn', disabled: L.loading, onclick: () => loadLibrary(false) },
         L.loading ? 'Loading…' : 'Load more')) : null));
@@ -822,9 +996,9 @@ function settingsView() {
   const u = S.usage;
   return h('div', { class: 'page' }, h('div', { class: 'wrap' },
     h('div', { class: 'page-head' }, h('h1', {}, 'Settings')),
-    h('section', { class: 'setting' },
+    h('section', { class: 'setting glass' },
       h('h2', {}, icon('face', 'icon-sm'), 'Your likeness'),
-      h('p', { class: 'muted' }, 'One to four clear photos of your face. When you ask for "me as an astronaut", ',
+      h('p', {}, 'One to four clear photos of your face. When you ask for "me as an astronaut", ',
         'these are what "me" means. Nobody else\'s messages can use them.'),
       h('div', { class: 'ref-list' },
         S.refs.map(r => h('div', { class: 'ref' },
@@ -833,45 +1007,67 @@ function settingsView() {
                         onclick: () => removeLikeness(r) }, icon('x', 'icon-sm')))),
         S.refs.length < 4 ? h('button', { class: 'ref-add', disabled: S.refsBusy,
                                           onclick: () => document.getElementById('face-file')?.click() },
-          S.refsBusy ? h('i', { class: 'pulse' }) : icon('plus'), h('span', { class: 'small' }, S.refsBusy ? 'Checking…' : 'Add')) : null),
+          S.refsBusy ? h('i', { class: 'spinner' }) : icon('plus'), h('span', { class: 'small' }, S.refsBusy ? 'Checking…' : 'Add')) : null),
       h('input', { type: 'file', id: 'face-file', accept: 'image/*', multiple: true, hidden: true,
                    onchange: e => { addLikeness([...e.target.files]); e.target.value = ''; } })),
-    h('section', { class: 'setting' },
-      h('h2', {}, 'This month'),
+    h('section', { class: 'setting glass' },
+      h('h2', {}, icon('sparkle', 'icon-sm'), 'This month'),
       u ? h('div', { class: 'stats' },
         h('div', {}, h('b', {}, String(u.images)), h('span', {}, plural(u.images, 'image').replace(/^\d+ /, ''))),
         h('div', {}, h('b', {}, fmtKwh(u.kwh)), h('span', {}, 'kWh')),
         h('div', {}, h('b', {}, fmtMoney(u.cost_usd)), h('span', {}, 'electricity'))) : h('p', { class: 'muted' }, 'Loading…'),
-      h('p', { class: 'small faint' }, 'An estimate of the GPU\'s share of the electricity, not a wall-socket reading. ',
+      h('p', { class: 'small faint', style: 'margin:0' }, 'An estimate of the GPU\'s share of the electricity, not a wall-socket reading. ',
         'Shown so you can see it; nothing is charged or limited.'))));
 }
 
-/* --------------------------------------------------------------- lightbox */
-function lightbox() {
-  const img = S.lightbox;
+/* ----------------------------------------------------------------- viewer */
+// Full screen, the image glowing on dark glass. Arrows and swipes move
+// through whatever list it was opened from: the thread, or the library.
+function viewer() {
+  const V = S.viewer;
+  const img = V.items[V.i];
+  if (!img) { S.viewer = null; return null; }
   const p = img.params || {};
-  const close = () => { S.lightbox = null; render(); };
-  const meta = (label, val) => val == null || val === '' ? null
-    : h('div', {}, h('b', {}, label + ' '), h('span', { class: 'p' }, String(val)));
+  const close = () => { S.viewer = null; render(); };
+  const go = d => { const i = V.i + d; if (i >= 0 && i < V.items.length) { V.i = i; render(); } };
+  let x0 = null;
+  const kv = (label, val, mono) => val == null || val === '' ? null
+    : h('div', {}, h('div', { class: 'k' }, label), h('div', { class: 'v' + (mono ? ' mono' : '') }, String(val)));
   return h('div', {
-    class: 'lightbox', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Image',
-    onclick: e => { if (e.target === e.currentTarget) close(); },
+    class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Image viewer',
   },
-    h('div', { class: 'lightbox-bar' },
-      // <a download> works over plain HTTP; the Clipboard API would not, which
-      // is why there is no "copy image" button here.
-      h('a', { class: 'btn btn-primary', href: img.url, download: `alchemyui-${img.seed ?? img.id}.png` },
-        icon('down', 'icon-sm'), 'Download'),
-      h('button', { class: 'btn', onclick: () => useInNext(img) }, icon('clip', 'icon-sm'), 'Use in next message'),
-      h('button', { class: 'btn' + (img.favorite ? ' is-on' : ''), onclick: () => toggleFavorite(img) },
-        icon('star', 'icon-sm'), img.favorite ? 'Favourited' : 'Favourite'),
-      h('button', { class: 'btn btn-ghost btn-danger', onclick: () => delImage(img) }, icon('trash', 'icon-sm'), 'Delete'),
-      h('button', { class: 'btn btn-ghost', onclick: close }, icon('x', 'icon-sm'), 'Close')),
-    h('img', { src: img.url, alt: p.prompt || 'Generated image' }),
-    h('div', { class: 'lightbox-meta' },
-      meta('Prompt', p.prompt), meta('Seed', p.seed),
-      meta('Size', img.width && img.height ? `${img.width} × ${img.height}` : null),
-      meta('Model', shortCkpt(p.checkpoint))));
+    h('div', {
+      class: 'v-stage',
+      onclick: e => { if (e.target === e.currentTarget) close(); },
+      onpointerdown: e => { x0 = e.clientX; },
+      onpointerup: e => { if (x0 != null && Math.abs(e.clientX - x0) > 50) go(e.clientX < x0 ? 1 : -1); x0 = null; },
+    },
+      h('div', { class: 'v-pic', style: glow(img.palette) },
+        h('div', { class: 'halo' }),
+        h('img', { src: img.url, alt: p.prompt || 'Generated image' })),
+      h('button', { class: 'v-nav prev glass', title: 'Previous (←)', disabled: V.i === 0, onclick: () => go(-1) }, icon('left')),
+      h('button', { class: 'v-nav next glass', title: 'Next (→)', disabled: V.i >= V.items.length - 1, onclick: () => go(1) }, icon('right')),
+      h('button', { class: 'v-close glass', title: 'Close (Esc)', onclick: close }, icon('x')),
+      V.items.length > 1 ? h('div', { class: 'v-count mono' }, `${V.i + 1} of ${V.items.length} · ← → to browse · Esc to close`) : null),
+    h('aside', { class: 'v-side' },
+      kv('Prompt', p.prompt),
+      p.negative ? kv('Avoiding', p.negative, true) : null,
+      h('div', { class: 'v-grid' },
+        kv('Model', p.checkpoint ? modelLabel(p.checkpoint) : null),
+        kv('Size', img.width && img.height ? `${img.width} × ${img.height}` : null),
+        kv('Seed', p.seed, true),
+        kv('Made', img.created_at ? new Date(img.created_at * 1000).toLocaleString(undefined,
+          { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null)),
+      p.steps ? kv('Settings', `${p.steps} steps · cfg ${p.cfg} · ${p.sampler || ''} ${p.scheduler || ''}`.trim(), true) : null,
+      h('div', { class: 'v-acts' },
+        h('button', { class: 'btn fav' + (img.favorite ? ' is-on' : ''), onclick: () => toggleFavorite(img) },
+          icon('star', 'icon-sm'), img.favorite ? 'Favourited' : 'Favourite'),
+        // <a download> works over plain HTTP, where the Clipboard API would not.
+        h('a', { class: 'btn', href: img.url, download: `alchemyui-${img.seed ?? img.id}.png` },
+          icon('down', 'icon-sm'), 'Download'),
+        h('button', { class: 'btn', onclick: () => copyText(p.prompt || '') }, icon('copy', 'icon-sm'), 'Copy prompt'),
+        h('button', { class: 'btn btn-ghost btn-danger', onclick: () => delImage(img) }, icon('trash', 'icon-sm'), 'Delete'),
+        h('button', { class: 'btn btn-primary wide', onclick: () => useInNext(img) }, icon('plus', 'icon-sm'), 'Use in chat'))));
 }
 
 function toast(message, isError = false) {
@@ -892,13 +1088,25 @@ async function boot() {
     return;
   }
   render();
-  await loadThreads();
+  await Promise.all([loadThreads(), loadModels()]);
   await route();
   window.addEventListener('hashchange', route);
   document.addEventListener('keydown', e => {
+    if (S.viewer) {
+      if (e.key === 'Escape') { S.viewer = null; render(); }
+      else if (e.key === 'ArrowLeft' && S.viewer.i > 0) { S.viewer.i--; render(); }
+      else if (e.key === 'ArrowRight' && S.viewer.i < S.viewer.items.length - 1) { S.viewer.i++; render(); }
+      return;
+    }
     if (e.key !== 'Escape') return;
-    if (S.lightbox) { S.lightbox = null; render(); }
+    if (S.modelMenu) { S.modelMenu = false; renderTools(); }
     else if (S.drawer || S.menu) { S.drawer = false; S.menu = false; render(); }
+  });
+  // The library's rows are laid out for the window's width.
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (S.view === 'library') render(); }, 150);
   });
   connectEvents();
   S.booted = true;

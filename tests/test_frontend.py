@@ -31,7 +31,8 @@ def _boot(base: str, script: str, hash_: str = "") -> dict:
 
 
 @pytest.mark.parametrize("script, first_call", [("app.js", "/api/me"),
-                                                ("admin.js", "/api/admin/live")])
+                                                ("admin.js", "/api/admin/live"),
+                                                ("lab.js", "/api/lab/presets")])
 def test_page_boots_and_renders(live_server, script, first_call):
     base, _, _ = live_server
     result = _boot(base, script)
@@ -46,6 +47,34 @@ def test_chat_boots_into_its_threads(live_server):
     assert result["error"] is None, result["error"]
     assert "/api/threads" in result["requests"]
     assert "/api/events" in result["requests"]
+    assert "/api/models" in result["requests"]
+
+
+def test_the_lab_boots_into_its_runs_and_an_estimate(live_server):
+    base, _, _ = live_server
+    result = _boot(base, "lab.js")
+    assert result["error"] is None, result["error"]
+    assert {"/api/lab/runs", "/api/models", "/api/lab/estimate"} <= set(result["requests"])
+
+
+def test_a_lab_run_page_renders_with_its_cells(live_server):
+    """The run view is the Lab's most complex drawing: boot after a finished
+    run exists, and open it the way the page does."""
+    import time
+
+    import httpx
+
+    base, _, _ = live_server
+    rv6 = "SD1.5/realisticVisionV60B1_v60B1VAE_pruned_fp16.safetensors"
+    with httpx.Client(base_url=base, timeout=10) as c:
+        run = c.post("/api/lab/runs", json={"checkpoints": [rv6], "prompts": ["food"], "seeds": 1,
+                                            "axes": [{"param": "cfg", "values": [4, 6]}]}).json()
+        deadline = time.time() + 10
+        while c.get(f"/api/lab/runs/{run['id']}").json()["state"] != "done":
+            assert time.time() < deadline
+            time.sleep(0.05)
+    result = _boot(base, "lab.js")
+    assert result["error"] is None, result["error"]
 
 
 @pytest.mark.parametrize("hash_, calls", [

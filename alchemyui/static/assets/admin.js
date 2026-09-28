@@ -36,7 +36,7 @@ const fmtAgo = ts => {
 };
 
 function tile(label, value, sub) {
-  return h('div', { class: 'adm-tile' }, h('div', { class: 'small faint' }, label),
+  return h('div', { class: 'adm-tile glass' }, h('div', { class: 'small faint' }, label),
     h('div', { class: 'adm-big' }, value), sub ? h('div', { class: 'small muted' }, sub) : null);
 }
 
@@ -80,7 +80,8 @@ function liveSection() {
     L.queue.jobs.length ? h('table', { class: 'adm-table' },
       h('tr', {}, ['#', 'Owner', 'Workflow', 'Model', 'Status', 'Progress'].map(c => h('th', {}, c))),
       L.queue.jobs.map(j => h('tr', {},
-        h('td', {}, String(j.position)), h('td', {}, j.owner), h('td', {}, j.workflow_id),
+        h('td', {}, String(j.position)), h('td', {}, j.owner, j.lane === 'lab' ? h('span', { class: 'small muted' }, ' · lab') : null),
+        h('td', {}, j.workflow_id),
         h('td', {}, (j.checkpoint || '').split('/').pop()), h('td', {}, j.status),
         h('td', {}, j.position === 0 ? `${Math.round(j.overall * 100)}%` : (j.eta_s ? `~${Math.round(j.eta_s)}s` : ''))))) : null);
 }
@@ -123,7 +124,10 @@ function fallbacksSection() {
 
 function render() {
   $app.replaceChildren(h('div', { class: 'wrap adm' },
-    h('header', { class: 'adm-head' }, h('h1', {}, 'AlchemyUI admin'), h('a', { href: '/' }, 'Back to the app')),
+    h('header', { class: 'adm-head' },
+      h('h1', {}, h('span', { class: 'grad-text' }, 'AlchemyUI'), ' admin'),
+      h('div', { class: 'links' }, h('a', { class: 'btn btn-sm', href: '/lab' }, 'Photoreal Lab'),
+        h('a', { class: 'btn btn-sm btn-ghost', href: '/' }, 'Back to the app'))),
     S.error ? h('div', { class: 'card', style: 'padding:12px;color:var(--danger)' }, S.error) : null,
     liveSection(), usersSection(), failuresSection(), fallbacksSection()));
 }
