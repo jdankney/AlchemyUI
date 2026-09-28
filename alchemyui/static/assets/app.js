@@ -97,7 +97,9 @@ const LIVE = new Set(['queued', 'running']);
 const BUSY_TURN = new Set(['planning', 'queued']);
 const glow = pal => pal && pal.length ? `--c1:${pal[0]};--c2:${pal[1] || pal[0]};--c3:${pal[2] || pal[0]}` : '';
 const ratio = (w, h) => (w && h) ? `aspect-ratio:${w} / ${h}` : 'aspect-ratio:1 / 1';
-const modelLabel = name => (S.models.find(m => m.name === name) || {}).label || shortCkpt(name);
+// v1 stored a model by its bare filename; the catalogue names it by folder.
+const modelLabel = name => (S.models.find(m => m.name === name
+  || m.name.split('/').pop() === (name || '').split('/').pop()) || {}).label || shortCkpt(name);
 
 // "Today", "Yesterday", a weekday within the week, else a date.
 function dayLabel(ts) {
@@ -412,7 +414,14 @@ function nearBottom() {
 }
 function stickToBottom(yes) {
   const s = document.getElementById('scroll');
+  if (yes) S.pinned = true;
   if (s && yes) requestAnimationFrame(() => { s.scrollTop = s.scrollHeight; });
+}
+// Images arrive after the scroll was set and push the bottom away; while the
+// person has not scrolled up themselves, follow it down.
+function imageLoaded() {
+  const s = document.getElementById('scroll');
+  if (s && S.pinned) s.scrollTop = s.scrollHeight;
 }
 
 /* -------------------------------------------------------------------- rail */
@@ -493,7 +502,7 @@ function mainView() {
   if (S.view === 'settings') return settingsView();
   return h('div', { class: 'chat' },
     chatHead(),
-    h('div', { class: 'chat-scroll', id: 'scroll' },
+    h('div', { class: 'chat-scroll', id: 'scroll', onscroll: () => { S.pinned = nearBottom(); } },
       h('div', { class: 'wrap thread', id: 'thread' }, threadKids())),
     composer());
 }
@@ -653,7 +662,8 @@ function picture(img, n) {
     h('div', { class: 'halo' }),
     h('div', { class: 'ph', style: ratio(img.width, img.height) },
       h('img', { src: img.url, alt: img.params?.prompt || 'Generated image', loading: 'lazy',
-                 width: img.width || undefined, height: img.height || undefined, onclick: open }),
+                 width: img.width || undefined, height: img.height || undefined, onclick: open,
+                 onload: imageLoaded }),
       n ? h('span', { class: 'img-n', title: `Image ${n}` }, n) : null,
       h('div', { class: 'pic-acts' },
         favButton(img),
@@ -675,7 +685,9 @@ function favButton(img) {
 /* ---------------------------------------------------------------- composer */
 function placeholder() {
   if (pendingQuestion()) return 'Type your answer…';
-  return S.turns.length ? 'Ask for a change, or something new…' : 'Describe an image, or drop one here…';
+  const narrow = (window.innerWidth || 1280) <= 720;
+  if (S.turns.length) return narrow ? 'Ask for a change…' : 'Ask for a change, or something new…';
+  return narrow ? 'Describe an image…' : 'Describe an image, or drop one here…';
 }
 
 function composer() {
@@ -1048,7 +1060,8 @@ function viewer() {
       h('button', { class: 'v-nav prev glass', title: 'Previous (←)', disabled: V.i === 0, onclick: () => go(-1) }, icon('left')),
       h('button', { class: 'v-nav next glass', title: 'Next (→)', disabled: V.i >= V.items.length - 1, onclick: () => go(1) }, icon('right')),
       h('button', { class: 'v-close glass', title: 'Close (Esc)', onclick: close }, icon('x')),
-      V.items.length > 1 ? h('div', { class: 'v-count mono' }, `${V.i + 1} of ${V.items.length} · ← → to browse · Esc to close`) : null),
+      V.items.length > 1 ? h('div', { class: 'v-count mono' }, `${V.i + 1} of ${V.items.length}`,
+        h('span', { class: 'hint' }, ' · ← → to browse · Esc to close')) : null),
     h('aside', { class: 'v-side' },
       kv('Prompt', p.prompt),
       p.negative ? kv('Avoiding', p.negative, true) : null,

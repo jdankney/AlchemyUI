@@ -79,6 +79,7 @@ button, input, select, textarea { font: inherit; color: inherit; letter-spacing:
 button { background: none; border: 0; padding: 0; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 a { color: var(--violet); }
+a.btn, a.pill, a.rail-link { text-decoration: none; }
 code, pre, kbd, .mono { font-family: var(--mono); }
 ::selection { background: rgba(180, 140, 255, .32); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -339,12 +340,13 @@ details.tech pre {
 .gallery.n-1 .ph { max-height: 72vh; width: auto; max-width: 100%; }
 /* the glow: the image's own three colours, soft enough to need no blur */
 .halo {
-  position: absolute; inset: -18px; z-index: -1; pointer-events: none; border-radius: 40px;
+  position: absolute; inset: -22px; z-index: -1; pointer-events: none; border-radius: 40px;
+  filter: blur(30px); transform: translateZ(0);
   background:
     radial-gradient(55% 55% at 22% 25%, var(--c1, #6b4bb8) 0%, transparent 70%),
     radial-gradient(55% 55% at 80% 75%, var(--c2, #2a6f86) 0%, transparent 70%),
     radial-gradient(45% 45% at 70% 20%, var(--c3, #8d5a9e) 0%, transparent 70%);
-  opacity: .7; --halo-o: .7; animation: bloom .9s var(--ease);
+  opacity: .6; --halo-o: .6; animation: bloom .9s var(--ease);
 }
 .ph {
   position: relative; border-radius: var(--r-lg); overflow: hidden; background: var(--bg-2);
@@ -515,7 +517,7 @@ details.tech pre {
 }
 .v-stage { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; padding: 36px 70px; }
 .v-pic { position: relative; isolation: isolate; max-width: 100%; max-height: 100%; display: flex; }
-.v-pic .halo { inset: -40px; opacity: .55; --halo-o: .55; }
+.v-pic .halo { inset: -60px; opacity: .5; --halo-o: .5; filter: blur(50px); }
 .v-pic img {
   max-width: 100%; max-height: calc(100vh - 72px); object-fit: contain; display: block;
   border-radius: var(--r-lg); border: 1px solid var(--edge); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .8);
@@ -573,6 +575,8 @@ details.tech pre {
   .v-stage { padding: 56px 12px 28px; }
   .v-pic img { max-height: 62vh; }
   .v-nav { display: none; }
+  .v-count .hint { display: none; }
+  .v-count { bottom: 6px; }
   .v-side { border-left: 0; border-top: 1px solid var(--edge); border-radius: 22px 22px 0 0; max-height: none; }
 }
 @media (max-width: 720px) {
@@ -588,7 +592,9 @@ details.tech pre {
   .msg-user { max-width: 90%; }
   .search .input { width: 100%; }
   .search { flex: 1 1 100%; }
-  .model-pill .lbl { max-width: 5.5rem; }
+  .model-pill { padding: 0 10px; }
+  .model-pill .lbl { max-width: 4.6rem; }
+  .model-pill .icon:last-child { display: none; }
   .model-menu {
     position: fixed; left: 0; right: 0; bottom: 0; width: auto; border-radius: 26px 26px 0 0;
     padding: 6px 10px calc(16px + env(safe-area-inset-bottom)); animation: rise .22s var(--ease);
@@ -607,7 +613,7 @@ body.page-body { overflow: auto; }
 .adm-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .adm-head .links { display: flex; gap: 8px; }
 .adm-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-.adm-tile { border-radius: var(--r-lg); padding: 14px 16px; }
+.adm-tile { border-radius: var(--r-lg); padding: 14px 16px; min-width: 0; overflow-wrap: anywhere; }
 .adm-big { font-size: 22px; font-weight: 600; letter-spacing: -.02em; margin: 2px 0; }
 .adm-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13.5px; }
 .adm-table th { text-align: left; font-weight: 500; color: var(--text-3); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; padding: 8px; border-bottom: 1px solid var(--edge); }

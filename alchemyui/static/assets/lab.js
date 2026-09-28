@@ -86,6 +86,7 @@ function reestimate() {
     try { S.estimate = await post('/api/lab/estimate', specOf()); S.estimateError = null; }
     catch (e) { S.estimate = null; S.estimateError = e.message; }
     swap('estimate', estimateLine());
+    swap('start', startButton());
   }, 250);
 }
 const swap = (id, el) => { const old = document.getElementById(id); if (old) old.replaceWith(el); };
@@ -155,8 +156,12 @@ function newRunPanel() {
     h('div', { class: 'lab-field' }, h('label', {}, 'What to compare'),
       f.axes.map((a, i) => axisEditor(a, i))),
     estimateLine(),
-    h('button', { class: 'btn btn-primary', disabled: S.starting || !S.estimate, onclick: startRun },
-      icon('flask', 'icon-sm'), S.starting ? 'Starting…' : 'Start the run'));
+    startButton());
+}
+
+function startButton() {
+  return h('button', { class: 'btn btn-primary', id: 'start', disabled: S.starting || !S.estimate, onclick: startRun },
+    icon('flask', 'icon-sm'), S.starting ? 'Starting…' : 'Start the run');
 }
 
 async function startRun() {
