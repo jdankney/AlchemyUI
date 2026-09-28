@@ -21,6 +21,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic, 1024px native. Slower, best quality.",
+      "tagline": "Finest detail · SDXL, the slowest",
       "aspects": {
         "1:1": [
           1024,
@@ -60,6 +61,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5 in six steps. The fastest good model here.",
+      "tagline": "Quickest drafts · may stamp a watermark",
       "aspects": {
         "1:1": [
           512,
@@ -101,6 +103,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5, full step count.",
+      "tagline": "Fast · SD1.5 · the everyday default",
       "aspects": {
         "1:1": [
           512,
@@ -140,6 +143,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5. About four times faster than SDXL.",
+      "tagline": "Fast · SD1.5 · a different look",
       "aspects": {
         "1:1": [
           512,

@@ -34,6 +34,7 @@ from .faces import FaceRejected, get_analyser, normalise_reference
 from .identity import Principal, get_principal, require_admin
 from .jobs import JobRejected, image_as_upload, image_public, job_public, record_upload, submit_jobs
 from .planner.schema import Vocabulary
+from .profiles import load_profiles
 from .queue import QueueManager, get_queue, start_queue, stop_queue
 from .registry import Registry, get_registry
 from .storage import UploadRejected, backfill_palettes, normalise_mask, save_upload
@@ -59,8 +60,11 @@ async def lifespan(app: FastAPI):
 
     Path(settings.output_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
-    qm = await start_queue()
     reg = get_registry()
+    # Tuned profiles from the Lab, laid over the registry's defaults before
+    # anything reads a checkpoint -- the queue's estimates included.
+    await load_profiles(get_db(), reg)
+    qm = await start_queue()
     router = build_router(settings, Vocabulary.from_registry(reg, settings.max_batch))
     await start_engine(get_db(), qm, reg, settings, router, comfy)
     # Images saved before palettes existed get their colours in the background.

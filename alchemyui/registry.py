@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import json
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -61,11 +61,12 @@ class CheckpointInfo:
     defaults: dict[str, Any] = field(default_factory=dict)
     est_seconds_per_step: float = 3.0
     est_load_s: float = 30.0
+    tagline: str = ""              # one line for the model menu
 
     def public(self) -> dict:
         return {
             "name": self.name, "label": self.label, "family": self.family,
-            "traits": list(self.traits), "blurb": self.blurb,
+            "traits": list(self.traits), "blurb": self.blurb, "tagline": self.tagline,
             "aspects": {k: list(v) for k, v in self.aspects.items()},
             "defaults": dict(self.defaults),
         }
@@ -331,11 +332,44 @@ class WorkflowInfo:
         }
 
 
+# The families a person can pin from the model menu, and the order the menu
+# lists them in: by what each is for, best first.
+SWITCHABLE_FAMILIES = ("sdxl", "sd15")
+_MENU_ORDER = ("quality", "fast", "draft")
+
+
 class Registry:
     def __init__(self, workflows: dict[str, WorkflowInfo],
                  checkpoints: dict[str, CheckpointInfo] | None = None):
         self._workflows = workflows
         self._checkpoints = checkpoints or {}
+        # What the registry file says, before any tuned profile is laid over
+        # it. Kept so a reset can go back, and the Lab can show the baseline.
+        self._base = dict(self._checkpoints)
+
+    def base(self, name: str) -> CheckpointInfo | None:
+        return self._base.get(name)
+
+    def set_override(self, name: str, settings: dict | None) -> None:
+        """Lay a tuned profile over a checkpoint's registry defaults, or with
+        None, take it off again. Everything that reads the checkpoint -- the
+        policy, the queue's estimates, the model menu -- sees the result."""
+        base = self._base.get(name)
+        if base is None:
+            raise KeyError(f"unknown checkpoint {name!r}")
+        self._checkpoints[name] = (replace(base, defaults={**base.defaults, **settings})
+                                   if settings else base)
+
+    def switchable(self) -> list[CheckpointInfo]:
+        """The models the composer's menu offers: photoreal, and a family the
+        general-purpose workflows take. Inpainting UNets are the planner's
+        business alone (extending), and the SD1.5 base is not photoreal."""
+        out = [c for c in self._checkpoints.values()
+               if "photoreal" in c.traits and c.family in SWITCHABLE_FAMILIES]
+
+        def rank(c: CheckpointInfo) -> int:
+            return next((i for i, t in enumerate(_MENU_ORDER) if t in c.traits), len(_MENU_ORDER))
+        return sorted(out, key=rank)
 
     def checkpoint(self, name: str) -> CheckpointInfo | None:
         hit = self._checkpoints.get(name)
@@ -601,6 +635,7 @@ def load_registry(workflows_dir: str | Path) -> Registry:
             defaults=dict(c.get("defaults") or {}),
             est_seconds_per_step=float(est.get("seconds_per_step", 3.0)),
             est_load_s=float(est.get("load_s", 30.0)),
+            tagline=c.get("tagline", ""),
         )
 
     workflows = {k: validate_entry(k, v, workflows_dir) for k, v in entries.items()}
