@@ -1,0 +1,50 @@
+{
+  "_comment": [
+    "The Photoreal Lab's test material. Committed, so every run of every",
+    "deployment compares like with like. Prompts cover what photorealism",
+    "usually breaks on: skin, hands, low light, texture, depth.",
+    "Aspects must be ones every switchable checkpoint offers.",
+    "A sampler entry is 'sampler scheduler', both from the txt2img workflow's choices."
+  ],
+  "prompts": [
+    {"key": "portrait", "label": "Portrait", "aspect": "3:4",
+     "prompt": "close-up portrait of a woman in her thirties by a window, soft daylight on her face, freckles"},
+    {"key": "street", "label": "Street", "aspect": "4:3",
+     "prompt": "an old man reading a newspaper on a park bench in a city, early morning light"},
+    {"key": "landscape", "label": "Landscape", "aspect": "16:9",
+     "prompt": "a mountain lake at golden hour, pine forest along the shore, mist over the water"},
+    {"key": "interior", "label": "Interior", "aspect": "4:3",
+     "prompt": "a cosy living room with a leather sofa, full bookshelves and a reading lamp, evening"},
+    {"key": "food", "label": "Food", "aspect": "1:1",
+     "prompt": "a bowl of ramen on a wooden table in a small restaurant, steam rising"},
+    {"key": "animal", "label": "Animal", "aspect": "4:3",
+     "prompt": "a golden retriever running along a beach, water splashing around its paws"},
+    {"key": "night", "label": "Night city", "aspect": "16:9",
+     "prompt": "a rainy city street at night, neon signs reflecting on wet asphalt, people with umbrellas"},
+    {"key": "hands", "label": "Hands", "aspect": "1:1",
+     "prompt": "the hands of a potter shaping clay on a spinning wheel, workshop"}
+  ],
+  "looks": {
+    "none": {"label": "None", "text": ""},
+    "raw": {"label": "RAW photo", "text": "RAW photo, natural lighting, film grain, sharp focus, highly detailed"},
+    "film": {"label": "35mm film", "text": "35mm film photograph, Kodak Portra 400, natural colours, subtle grain"},
+    "dslr": {"label": "DSLR", "text": "DSLR photo, 85mm lens, f/1.8, shallow depth of field, professional photography"}
+  },
+  "negatives": {
+    "house": {"label": "House", "text": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs"},
+    "strict": {"label": "Photo-strict", "text": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs, illustration, painting, drawing, cartoon, anime, 3d render, cgi, plastic skin, airbrushed, oversaturated"},
+    "minimal": {"label": "Minimal", "text": "watermark, text, signature"}
+  },
+  "samplers": [
+    "dpmpp_2m karras",
+    "dpmpp_2m_sde karras",
+    "dpmpp_sde karras",
+    "dpmpp_3m_sde exponential",
+    "euler_ancestral normal",
+    "uni_pc normal"
+  ],
+  "suggest": {
+    "cfg": [3.5, 5, 7],
+    "steps": [20, 30, 40]
+  }
+}

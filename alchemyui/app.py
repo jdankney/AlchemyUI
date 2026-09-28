@@ -28,12 +28,14 @@ from pydantic import BaseModel, Field
 
 from . import admin as admin_api
 from . import chat as chat_api
+from . import lab_api
 from .comfy import ComfyClient, get_comfy
 from .config import Settings, get_settings
 from .db import Database, get_db, now
 from .faces import FaceRejected, get_analyser, normalise_reference
 from .identity import Principal, get_principal, require_admin
 from .jobs import JobRejected, image_as_upload, image_public, job_public, record_upload, submit_jobs
+from .lab import start_lab, stop_lab
 from .planner.schema import Vocabulary
 from .profiles import load_profiles
 from .queue import QueueManager, get_queue, start_queue, stop_queue
@@ -68,6 +70,7 @@ async def lifespan(app: FastAPI):
     qm = await start_queue()
     router = build_router(settings, Vocabulary.from_registry(reg, settings.max_batch))
     await start_engine(get_db(), qm, reg, settings, router, comfy)
+    await start_lab(get_db(), qm, reg, settings)
     # Images saved before palettes existed get their colours in the background.
     backfill = asyncio.create_task(backfill_palettes(get_db()), name="palette-backfill")
     log.info("alchemyui up on %s:%s (dev_mode=%s)",
@@ -76,6 +79,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         backfill.cancel()
+        stop_lab()
         await stop_engine()
         await stop_queue()
         await comfy.aclose()
@@ -85,6 +89,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AlchemyUI", lifespan=lifespan)
 app.include_router(admin_api.router)
 app.include_router(chat_api.router)
+app.include_router(lab_api.router)
 
 
 def _sse(obj: dict) -> str:
@@ -595,7 +600,7 @@ def _clean_tags(raw: list[str]) -> str:
 @app.get("/api/images")
 async def list_images(limit: int = 100, before: float | None = None,
                       q: str = "", favorite: bool = False, tag: str = "",
-                      workflow_id: str = "",
+                      workflow_id: str = "", checkpoint: str = "",
                       principal: Principal = Depends(get_principal),
                       db: Database = Depends(get_db)):
     """The gallery, newest first, with the filters the UI offers.
@@ -605,7 +610,8 @@ async def list_images(limit: int = 100, before: float | None = None,
     in sync and a LIKE over a few thousand rows is instant.
     """
     limit = max(1, min(limit, 500))
-    where, args = ["user_id = ?"], [principal.user_id]
+    # The Lab's renders are an admin's test grid, not their pictures.
+    where, args = ["user_id = ?", "lab_run_id IS NULL"], [principal.user_id]
     if before is not None:
         where.append("created_at < ?")
         args.append(before)
@@ -620,6 +626,9 @@ async def list_images(limit: int = 100, before: float | None = None,
     if workflow_id.strip():
         where.append("workflow_id = ?")
         args.append(workflow_id.strip())
+    if checkpoint.strip():
+        where.append("json_extract(params_json, '$.checkpoint') = ?")
+        args.append(checkpoint.strip())
 
     sql = "SELECT * FROM images WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at DESC LIMIT ?"
@@ -837,6 +846,10 @@ if STATIC_DIR.exists():
     @app.get("/admin")
     async def admin_page(principal: Principal = Depends(require_admin)):
         return FileResponse(STATIC_DIR / "admin.html")
+
+    @app.get("/lab")
+    async def lab_page(principal: Principal = Depends(require_admin)):
+        return FileResponse(STATIC_DIR / "lab.html")
 
     @app.get("/")
     async def index():
