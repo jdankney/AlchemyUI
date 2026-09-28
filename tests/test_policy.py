@@ -111,3 +111,52 @@ def test_ask_and_select():
     assert [o["label"] for o in e.value.options] == ["1", "2"]
     c = compile_plan(plan(action="select", source="t2.2"), V, REG, ctx())
     assert c.workflow is None and c.count == 0
+
+
+# --- Phase 7.5: a pinned model -----------------------------------------------
+def pinned(model, **kw):
+    return PolicyContext(kw.get("resident"), kw.get("size"), kw.get("likeness", True), model)
+
+
+def test_a_pin_replaces_the_trait_lookup_for_generate_and_transform():
+    c = compile_plan(plan(), V, REG, pinned(EPIC))
+    assert c.checkpoint == EPIC and c.pinned == EPIC and c.note == ""
+    assert c.chip == "Generating · epiCRealism · 3:4"
+    # the planner's quality word does not outrank a person's pick
+    assert compile_plan(plan(quality="best"), V, REG, pinned(RV6)).checkpoint == RV6
+    t = compile_plan(plan(action="transform", source="a1"), V, REG, pinned(XL, size=(1024, 1024)))
+    assert t.checkpoint == XL and t.note == ""
+
+
+def test_extending_always_uses_the_inpainting_model_and_says_so():
+    c = compile_plan(plan(action="extend", source="a1", direction="left"), V, REG,
+                     pinned(EPIC, size=(512, 512)))
+    assert c.checkpoint == RV6_INPAINT
+    assert "inpainting" in c.note and "epiCRealism" in c.note
+
+
+def test_an_sdxl_only_workflow_ignores_an_sd15_pin_and_says_so():
+    c = compile_plan(plan(action="likeness", faces="me"), V, REG, pinned(RV6))
+    assert c.checkpoint == XL
+    assert "SDXL" in c.note
+
+
+def test_a_small_source_is_not_handed_to_sdxl_even_when_pinned():
+    c = compile_plan(plan(action="transform", source="a1"), V, REG, pinned(XL, size=(512, 512)))
+    assert c.checkpoint == RV6
+    assert "too small" in c.note
+
+
+def test_the_models_look_and_negative_are_composed_into_the_job():
+    reg = load_registry(Path(__file__).resolve().parent.parent / "workflows")
+    reg.set_override(EPIC, {"look": "RAW photo, film grain", "negative": "cgi, 3d render"})
+    c = compile_plan(plan(negative="text"), V, reg, pinned(EPIC))
+    assert c.raw["prompt"] == "a lighthouse, RAW photo, film grain"
+    assert c.raw["negative"] == "text, cgi, 3d render"
+    # unpinned, the policy's own pick composes with its own (untuned) profile
+    assert compile_plan(plan(), V, reg, ctx()).raw["prompt"] == "a lighthouse"
+
+
+def test_enhancing_a_small_image_with_an_sdxl_pin_needs_no_note():
+    c = compile_plan(plan(action="enhance", source="a1"), V, REG, pinned(XL, size=(512, 512)))
+    assert c.checkpoint == XL and c.note == ""

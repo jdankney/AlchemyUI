@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from ..profiles import compose
 from ..registry import CheckpointInfo, Registry, WorkflowInfo
 from .schema import Plan, Vocabulary
 
@@ -28,6 +29,7 @@ class PolicyContext:
     resident: str | None                   # checkpoint ComfyUI is believed to hold
     source_size: tuple[int, int] | None    # (w, h) of the resolved source image
     has_likeness: bool
+    pinned: str | None = None              # the model the person picked, or None for Auto
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ class Compiled:
     raw: dict                              # what submit_jobs hands workflow.resolve
     count: int
     chip: str                              # "Generating · Realistic Vision 6.0 · 3:4"
+    pinned: str | None = None              # what the person picked, whether or not it was used
+    note: str = ""                         # why the pick was not used, when it was not
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -115,10 +119,11 @@ def compile_plan(plan: Plan, vocab: Vocabulary, reg: Registry, ctx: PolicyContex
         if trait == "quality":
             trait = "fast"
     ck = pick_checkpoint(reg, workflow, trait, ctx.resident, family)
+    ck, note = _honour_pin(reg, workflow, plan, ctx, ck)
 
     house = str(workflow.defaults.get("negative") or "")
-    negative = ", ".join(x for x in (plan.negative, house) if x)
-    raw: dict = {"prompt": plan.prompt, "negative": negative}
+    prompt, negative = compose(plan.prompt, plan.negative, ck, house)
+    raw: dict = {"prompt": prompt, "negative": negative}
     if "width" in workflow.params:
         raw["aspect"] = plan.aspect
     if plan.action == "transform":
@@ -130,4 +135,23 @@ def compile_plan(plan: Plan, vocab: Vocabulary, reg: Registry, ctx: PolicyContex
     parts = [VERB[plan.action] + (f" {count}" if count > 1 else ""), ck.label]
     if "aspect" in raw:
         parts.append(plan.aspect)
-    return Compiled(plan.action, workflow.key, ck.name, raw, count, " · ".join(parts))
+    return Compiled(plan.action, workflow.key, ck.name, raw, count, " · ".join(parts),
+                    ctx.pinned, note)
+
+
+def _honour_pin(reg: Registry, workflow: WorkflowInfo, plan: Plan, ctx: PolicyContext,
+                picked: CheckpointInfo) -> tuple[CheckpointInfo, str]:
+    """A person's pick replaces the policy's -- except where honouring it
+    would break the picture, and then the policy's pick stands and the note
+    says why, in words for the person who made the pick."""
+    pin = reg.checkpoint(ctx.pinned) if ctx.pinned else None
+    if pin is None:
+        return picked, ""
+    if plan.action == "extend":
+        return picked, f"Not {pin.label}: extending always uses the inpainting model."
+    if pin.family not in workflow.families:
+        return picked, f"Not {pin.label}: this needs an SDXL model."
+    if (plan.action == "transform" and pin.family == "sdxl" and ctx.source_size
+            and max(ctx.source_size) < SDXL_MIN_SOURCE_EDGE):
+        return picked, f"Not {pin.label}: the source is too small for SDXL."
+    return pin, ""
