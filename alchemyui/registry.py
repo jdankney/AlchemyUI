@@ -86,6 +86,7 @@ class ReferenceSpec:
     batch: tuple[str, ...]
     target_node: str
     target_field: str
+    optional: bool = False       # Phase 8: a region edit may have no face reference
 
     @property
     def max(self) -> int:
@@ -123,7 +124,7 @@ class Stage:
 
 # How each known input is coerced. Keeping this in one table is what lets a
 # new capability be a registry entry rather than a change to resolve().
-_TEXT_INPUTS = frozenset({"prompt", "negative"})
+_TEXT_INPUTS = frozenset({"prompt", "negative", "region"})
 _INT_INPUTS = frozenset({"steps", "pad_left", "pad_top", "pad_right", "pad_bottom",
                          "grow_mask", "feathering", "refine_steps", "face_guide"})
 _FLOAT_INPUTS = frozenset({"cfg", "denoise", "scale_by", "refine", "face_denoise",
@@ -131,12 +132,13 @@ _FLOAT_INPUTS = frozenset({"cfg", "denoise", "scale_by", "refine", "face_denoise
                            "lora_strength"})
 # Filenames inside ComfyUI's input/ directory, set by the upload step rather
 # than by the person -- passed through untouched.
-_REF_INPUTS = frozenset({"image", "mask", "lora_name"})
+_REF_INPUTS = frozenset({"image", "mask", "lora_name", "garment"})
 # Passed through as-is: a list of ComfyUI filenames, one per reference.
 _LIST_INPUTS = frozenset({"references"})
 
 # What kind of editor the browser should put in front of the person.
-_KINDS = ("txt2img", "img2img", "inpaint", "outpaint", "enhance", "likeness")
+_KINDS = ("txt2img", "img2img", "inpaint", "outpaint", "enhance", "likeness",
+          "edit_region", "with_reference")
 
 # What a checkpoint is good for. The model policy chooses on these, never on
 # a filename; a trait not in this set is a typo, and fails the boot.
@@ -280,6 +282,10 @@ class WorkflowInfo:
         if spec is None:
             return graph
         if not names:
+            if spec.optional:
+                for dead in list(spec.slots) + list(spec.batch):
+                    graph.pop(dead, None)
+                return graph
             raise ValueError("this workflow needs at least one reference image")
         n = min(len(names), spec.max)
 
@@ -296,18 +302,40 @@ class WorkflowInfo:
         return graph
 
     def apply_optional(self, graph: dict, params: dict) -> dict:
-        """Bypass any optional node whose enabling parameter was not supplied."""
-        for opt in self.optional_nodes:
-            if params.get(opt.enabled_by):
-                continue
-            node = graph.pop(opt.node, None)
-            if node is None:
-                continue
-            fallback = {idx: node["inputs"][field] for idx, field in opt.outputs.items()}
-            for other in graph.values():
-                for key, value in other["inputs"].items():
-                    if isinstance(value, list) and len(value) == 2 and value[0] == opt.node:
-                        other["inputs"][key] = fallback[int(value[1])]
+        """Bypass optional nodes whose enabling parameter was not supplied.
+
+        A region edit has a *chain* of optional FaceID nodes: when no face is
+        supplied, the LoRA, the FaceID loader, the FaceID adapter and the
+        reference slots all have to disappear together. Resolve a rerouted
+        input through every removed node rather than only one hop, or
+        removing the loader would leave the adapter pointing at a node that
+        is no longer in the graph.
+        """
+        removed = {opt.node for opt in self.optional_nodes
+                   if not params.get(opt.enabled_by) and opt.node in graph}
+        if not removed:
+            return graph
+        fallbacks = {opt.node: {idx: graph[opt.node]["inputs"].get(field)
+                                for idx, field in opt.outputs.items()}
+                     for opt in self.optional_nodes if opt.node in removed}
+        for node_id in removed:
+            graph.pop(node_id, None)
+
+        def resolve(value):
+            seen = set()
+            while (isinstance(value, list) and len(value) == 2
+                   and value[0] in removed and value[0] not in seen):
+                seen.add(value[0])
+                value = fallbacks.get(value[0], {}).get(int(value[1]))
+                if value is None:
+                    return None
+            return value
+
+        for other in graph.values():
+            for key, value in list(other["inputs"].items()):
+                got = resolve(value)
+                if got is not None:
+                    other["inputs"][key] = got
         return graph
 
     def public(self) -> dict:
@@ -509,6 +537,7 @@ def validate_entry(key: str, entry: dict, workflows_dir: Path) -> WorkflowInfo:
         spec = entry["references"]
         slots = tuple(str(x) for x in spec["slots"])
         batch = tuple(str(x) for x in spec.get("batch", ()))
+        optional_references = bool(spec.get("optional", False))
         if len(batch) != max(0, len(slots) - 1):
             raise RegistryError(
                 f"{key}: {len(slots)} reference slots need {len(slots) - 1} batch nodes, "
@@ -536,7 +565,8 @@ def validate_entry(key: str, entry: dict, workflows_dir: Path) -> WorkflowInfo:
                 raise RegistryError(
                     f"{key}: batch node {node_id} should take image2 from slot {slots[i + 1]}"
                 )
-        references = ReferenceSpec(slots, batch, target_node, target_field)
+        references = ReferenceSpec(slots, batch, target_node, target_field,
+                                   optional_references)
 
     optional_nodes = []
     for name, spec in (entry.get("optional_nodes") or {}).items():

@@ -15,16 +15,21 @@ from dataclasses import asdict, dataclass
 from ..registry import Registry
 
 ACTIONS_KIND = {"generate": "txt2img", "transform": "img2img", "enhance": "enhance",
-                "likeness": "likeness", "extend": "outpaint"}
+                "likeness": "likeness", "extend": "outpaint",
+                "edit_region": "edit_region", "with_reference": "with_reference"}
 NO_GPU = ("select", "ask")
-NEEDS_SOURCE = ("transform", "enhance", "extend", "select")
-NEEDS_PROMPT = ("generate", "transform", "likeness", "extend")
+NEEDS_SOURCE = ("transform", "enhance", "extend", "edit_region", "select")
+NEEDS_PROMPT = ("generate", "transform", "likeness", "extend", "edit_region",
+                "with_reference")
 STRENGTHS = ("subtle", "medium", "strong")
 QUALITIES = ("fast", "best")
 DIRECTIONS = ("", "wider", "taller", "left", "right", "up", "down", "all")
+REGION_MODES = ("", "segment", "box")
 MAX_PROMPT = 600
 MAX_NEGATIVE = 240
 MAX_QUESTION = 240
+MAX_REGION = 160
+MAX_SEARCH = 240
 
 
 def face_handles(has_likeness: bool, attachments: list[str]) -> list[str]:
@@ -78,15 +83,27 @@ class Plan:
     direction: str
     question: str
     options: tuple[str, ...]
+    # Phase 8: a region edit names either what to segment ("the sky") or the
+    # normalized box where something new goes ([x1, y1, x2, y2], 0..1000).
+    # They are always present in the schema, and empty for every other action.
+    region: str = ""
+    region_mode: str = ""
+    box: tuple[int, int, int, int] | tuple = ()
+    # Phase 9: the phrase to search for, and the URL the person picked. The
+    # URL is server-written after a candidate is chosen, never model-written.
+    search: str = ""
+    reference: str = ""
 
     def as_dict(self) -> dict:
         d = asdict(self)
         d["options"] = list(self.options)
+        d["box"] = list(self.box)
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> Plan:
-        return cls(**{**d, "options": tuple(d.get("options") or ())})
+        return cls(**{**d, "options": tuple(d.get("options") or ()),
+                      "box": tuple(d.get("box") or ())})
 
 
 def plan_schema(vocab: Vocabulary, sources: list[str], faces: list[str]) -> dict:
@@ -104,6 +121,11 @@ def plan_schema(vocab: Vocabulary, sources: list[str], faces: list[str]) -> dict
         "question": {"type": "string", "maxLength": MAX_QUESTION},
         "options": {"type": "array", "maxItems": 4,
                     "items": {"type": "string", "maxLength": 60}},
+        "region": {"type": "string", "maxLength": MAX_REGION},
+        "region_mode": {"enum": list(REGION_MODES)},
+        "box": {"type": "array", "maxItems": 4,
+                "items": {"type": "integer", "minimum": 0, "maximum": 1000}},
+        "search": {"type": "string", "maxLength": MAX_SEARCH},
     }
     # Every field required, none optional: a flat, fully-required object is
     # the grammar llama.cpp enforces most reliably, and a small model fills in
@@ -180,6 +202,55 @@ def validate_plan(raw: str | dict, vocab: Vocabulary, sources: list[str],
         count = 1
     options = tuple(str(o).strip()[:60] for o in (raw.get("options") or [])
                     if str(o).strip())[:4]
+
+    search = s("search", MAX_SEARCH)
+    # The model never picks a web result. The app fills this only in a forced
+    # option after the person clicks a candidate; constrained decoding cannot
+    # even emit it (there is no such property in plan_schema).
+    reference = ""
+    if action == "with_reference":
+        if not search:
+            raise PlanInvalid("with_reference needs search (what to look for on the web)")
+        if not source and not face:
+            raise PlanInvalid("with_reference needs a source photo or a face to put the "
+                              "reference on")
+    else:
+        search, reference = "", ""
+
+    region = s("region", MAX_REGION)
+    region_mode = s("region_mode")
+    if region_mode not in REGION_MODES:
+        raise PlanInvalid(f"region_mode {region_mode!r} is not one of "
+                          f"{', '.join(m for m in REGION_MODES if m)}")
+    box: tuple[int, ...] = ()
+    if action == "edit_region":
+        raw_box = raw.get("box") or []
+        if not isinstance(raw_box, (list, tuple)):
+            raise PlanInvalid("box must be a list of four numbers")
+        if raw_box:
+            try:
+                box = tuple(int(v) for v in raw_box)
+            except (TypeError, ValueError):
+                raise PlanInvalid("box must contain four whole numbers")
+            if len(box) != 4 or any(v < 0 or v > 1000 for v in box):
+                raise PlanInvalid("box must contain exactly four whole numbers "
+                                  "[x1, y1, x2, y2] between 0 and 1000")
+            if box[2] <= box[0] or box[3] <= box[1]:
+                raise PlanInvalid("box needs a right/bottom edge past its left/top edge")
+        if not region_mode:
+            region_mode = "box" if box else "segment" if region else ""
+        if region_mode == "box" and not box:
+            raise PlanInvalid("a box edit needs box [x1, y1, x2, y2]")
+        if region_mode == "segment" and not region:
+            raise PlanInvalid("a segmented edit needs region (what to change, e.g. 'the sky')")
+        if not region_mode:
+            raise PlanInvalid("edit_region needs region (what to change) or box "
+                              "(where to put something new)")
+        if region_mode == "segment":
+            box = ()
+    else:
+        # The model fills every field; only an edit_region may use these.
+        region, region_mode, box = "", "", ()
     return Plan(action, source, face, prompt, s("negative", MAX_NEGATIVE), aspect,
                 max(1, min(vocab.max_count, count)), strength, quality, direction,
-                question, options)
+                question, options, region, region_mode, box, search, reference)

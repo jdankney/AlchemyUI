@@ -643,6 +643,11 @@ function planDetails(t) {
   return h('div', { class: 'plan glass' },
     row('Prompt', p.prompt, true),
     row('Look', look, true),
+    row('Region', c.region_mode === 'segment' ? c.region : null, true),
+    row('Area', c.region_mode === 'box' && c.box?.length === 4
+      ? `${c.box[1]}–${c.box[3]}% down · ${c.box[0]}–${c.box[2]}% across` : null, true),
+    row('Web search', c.search || p.search || null, true),
+    row('Reference', c.reference ? 'the image you picked' : null, true),
     row('Avoiding', raw.negative ?? p.negative, true),
     row('Model', (t.model || shortCkpt(c.checkpoint)) + (t.pin ? (t.pin === c.checkpoint ? ' · your pick' : ` · you picked ${modelLabel(t.pin)}`) : ' · picked for you')),
     row(seeds.length > 1 ? 'Seeds' : 'Seed', seeds.join(', '), true),
@@ -654,11 +659,20 @@ function planDetails(t) {
 
 function question(t) {
   const q = t.question || { question: t.reply, options: [] };
+  const cands = q.candidates || [];
   return h('div', { class: 'question glass' },
     h('div', { class: 'q' }, q.question),
-    q.options.length ? h('div', { class: 'q-opts' }, q.options.map((o, i) =>
-      h('button', { class: 'btn btn-sm', onclick: () => answer(t, { option: i }) }, o))) : null,
-    h('div', { class: 'small faint' }, q.options.length ? 'Or type an answer below.' : 'Type your answer below.'));
+    cands.length ? h('div', { class: 'candidates' }, cands.map((c, i) =>
+      h('button', { class: 'candidate', type: 'button',
+                    title: c.source ? `${c.title} — ${c.source}` : c.title,
+                    onclick: () => answer(t, { option: i }) },
+        h('img', { src: c.thumb_url, alt: c.title || 'Web reference', loading: 'lazy' }),
+        h('span', { class: 'candidate-title' }, c.title || 'Web image'),
+        c.source ? h('span', { class: 'candidate-source' }, c.source) : null)))
+      : q.options.length ? h('div', { class: 'q-opts' }, q.options.map((o, i) =>
+        h('button', { class: 'btn btn-sm', onclick: () => answer(t, { option: i }) }, o))) : null,
+    h('div', { class: 'small faint' }, q.options.length || cands.length
+      ? 'Or type an answer below.' : 'Type your answer below.'));
 }
 
 // A job in flight -- never a bare spinner. A frame the shape of the picture

@@ -459,6 +459,75 @@ worktree (`../AlchemyUI-phase7.5`), and the checkout went back to `main`.
 From now on, phases are built in a worktree, and live tests use a scratch
 instance on another port, on a copy of the database.
 
+## Phase 8 — as built
+
+Built and exercised against the real ComfyUI 0.46 on 2026-11-20.
+
+- **Two inpaint workflows, because a phrase and a box are different masks.**
+  `edit-region-sdxl` feeds a CLIPSeg text node into `VAEEncodeForInpaint`;
+  `edit-region-box-sdxl` takes a mask image the app draws. Keeping the box
+  path free of CLIPSeg means placement still works if the segmentation node
+  is missing, and it makes the mask exactly the area the router chose.
+- **The box is normalized 0..1000 and validated.** The vision model emits
+  `[x1, y1, x2, y2]`; the app converts it to pixels, rounds the corners, and
+  blurs the edge before uploading it. The first live mask used a rectangle
+  without the blur and read as a pasted-in panel; the soft edge is the same
+  reason the inpaint workflow grows the mask.
+- **The FaceID chain is optional.** A region edit may have no person in it,
+  so the LoRA, FaceID loader, adapter, slots and batches all have to vanish
+  together. `apply_optional` now resolves a rerouted input through the whole
+  removed chain, not one hop; without that the adapter would still point at
+  a deleted loader.
+- **The router prompt now says what region editing is for.** "Add me to my
+  bed" is offered a box and a face handle; "change the sky" is offered a
+  phrase. It no longer tells the model that part-of-a-photo edits are
+  impossible.
+- **Live acceptance:** a beach sky was repainted while the sea and sand
+  stayed put; a bed photo with a FaceID reference put the attached person on
+  the bed. The first CLIPSeg run took 76.8s of occupancy because it also
+  downloaded the 352px segmentation model on the CPU; later region jobs were
+  13.5s and 4.3s at ~65–70W. The box+FaceID run used the SD1.5 inpainting
+  UNet and completed on the 6GB card without OOM.
+- **CLIPSeg is a custom node, so `validate --live` checks it.** The original
+  `biegert` repository is gone; the maintained `zhengxyz123` fork exposes
+  `CLIPSegText` and uses the `transformers` already installed with ComfyUI.
+- **The ComfyUI checkout had newer code than its venv.** It wanted
+  `comfy-aimdo==0.6.0` and `comfy-kitchen==0.2.41`; the installed 0.4.11 and
+  0.2.26 left `comfy_aimdo.storage` missing. Installing the pinned pair was
+  enough; it is an operational note for any future ComfyUI update.
+
+## Phase 9 — as built
+
+Code, tests and the real workflows are in; the SearXNG instance itself is
+left to the operator (`SEARCH_URL`).
+
+- **Search returns metadata only; the image is fetched after the pick.** The
+  candidate picker is a grid of thumbnail URLs, and nothing is auto-picked,
+  because web image results are often wrong. The full image is then fetched
+  with a public-address check on every redirect, a streaming byte cap, and a
+  Pillow decode/re-encode. That is the SSRF boundary; the search endpoint is
+  trusted config, the result URLs are not.
+- **`with_reference` is not a third kind of inpaint.** The spec's table calls
+  for search → pick → `edit_region`, but example 4 has no source photo. As
+  built, a picked reference goes through IPAdapter Plus: with a source it is
+  an img2img edit; without one it is a likeness render using `me`. That is a
+  deliberate departure from the table, recorded here rather than pretending
+  the source exists. If a future region-aware garment edit is wanted, it can
+  reuse the same fetched reference and the box mask.
+- **FaceID and the reference chain are independent and optional.** The face
+  loaders are family-aware, so the same template serves SDXL and SD1.5; the
+  IPAdapter Plus chain is added only when a candidate is chosen. The plus
+  models downloaded are `ip-adapter-plus_sd15.bin` and
+  `ip-adapter-plus_sdxl_vit-h.bin`.
+- **Live:** both reference workflows completed on the real card. The likeness
+  path (SDXL, 896×1152, 12 steps, FaceID + Plus) took 100.5s at 71.7W mean;
+  the img2img path (RealVis XL, 10 steps) took 15.2s at 67.2W. Neither OOM'd
+  on the 6GB card. The outputs carried the picked garment and the reference
+  face.
+- **Open until `SEARCH_URL` is set:** the end-to-end search → candidate picker
+  has unit coverage and the turn engine has an integration test with a fake
+  search, but the real SearXNG round trip still needs the operator's URL.
+
 ## Architecture
 
 - **FastAPI + one SQLite connection (WAL) behind one asyncio lock**, lifted

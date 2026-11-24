@@ -21,7 +21,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic, 1024px native. Slower, best quality.",
-      "tagline": "Finest detail · SDXL, the slowest",
+      "tagline": "Finest detail \u00b7 SDXL, the slowest",
       "aspects": {
         "1:1": [
           1024,
@@ -61,7 +61,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5 in six steps. The fastest good model here.",
-      "tagline": "Quickest drafts · may stamp a watermark",
+      "tagline": "Quickest drafts \u00b7 may stamp a watermark",
       "aspects": {
         "1:1": [
           512,
@@ -103,7 +103,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5, full step count.",
-      "tagline": "Fast · SD1.5 · the everyday default",
+      "tagline": "Fast \u00b7 SD1.5 \u00b7 the everyday default",
       "aspects": {
         "1:1": [
           512,
@@ -143,7 +143,7 @@
         "photoreal"
       ],
       "blurb": "Photorealistic SD1.5. About four times faster than SDXL.",
-      "tagline": "Fast · SD1.5 · a different look",
+      "tagline": "Fast \u00b7 SD1.5 \u00b7 a different look",
       "aspects": {
         "1:1": [
           512,
@@ -1402,6 +1402,937 @@
       "_faceid_note": "face_weight and face_weight_v2 are IPAdapterFaceID's two strengths; the spec asks for both as sliders because they trade off differently. When a personal LoRA is active the app lowers the default face weight to ~0.45: the LoRA and FaceID both encode identity and fight each other at full strength. provider is CPU in the template because onnxruntime-gpu is not installed and the GPU belongs to the sampler.",
       "families": [
         "sdxl"
+      ]
+    },
+    "edit-region-sdxl": {
+      "kind": "edit_region",
+      "checkpoint": "SD1.5-Inpaint/realisticVisionV60B1_v60B1InpaintingVAE_pruned_fp16.safetensors",
+      "references": {
+        "optional": true,
+        "slots": [
+          "40",
+          "41",
+          "42",
+          "43"
+        ],
+        "batch": [
+          "50",
+          "51",
+          "52"
+        ],
+        "target": {
+          "node": "32",
+          "field": "image"
+        }
+      },
+      "optional_nodes": {
+        "lora": {
+          "node": "30",
+          "outputs": {
+            "0": "model",
+            "1": "clip"
+          },
+          "enabled_by": "lora_name"
+        },
+        "faceid_loader": {
+          "node": "31",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        },
+        "faceid": {
+          "node": "32",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "grow_mask": 32,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "face_weight": 0.8,
+        "face_weight_v2": 1.0,
+        "face_start": 0.0,
+        "face_end": 1.0,
+        "lora_strength": 0.8
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "grow_mask": [
+          0,
+          64
+        ],
+        "face_weight": [
+          0.0,
+          1.5
+        ],
+        "face_weight_v2": [
+          0.0,
+          2.0
+        ],
+        "face_start": [
+          0.0,
+          1.0
+        ],
+        "face_end": [
+          0.0,
+          1.0
+        ],
+        "lora_strength": [
+          0.0,
+          1.5
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc",
+          "dpmpp_sde"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 1.0,
+        "load_s": 15
+      },
+      "families": [
+        "sd15-inpaint"
+      ],
+      "_region_note": "The inpainting UNet removes the seam. CLIPSeg turns a phrase like 'the sky' into a mask; a box from the plan is rendered into a soft mask by the app and fed to LoadImageMask. The FaceID chain is optional and only present when the plan names a face.",
+      "display": "Change part of a photo",
+      "template": "sdxl_region_segment.v1.api.json",
+      "blurb": "Change something that is already there: the sky, a shirt, the dog.",
+      "requires": [
+        "image"
+      ],
+      "inputs": [
+        "checkpoint",
+        "prompt",
+        "negative",
+        "image",
+        "region",
+        "grow_mask",
+        "face_weight",
+        "face_weight_v2",
+        "face_start",
+        "face_end",
+        "lora_name",
+        "lora_strength",
+        "references",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "grow_mask": {
+          "node": "11",
+          "field": "grow_mask_by"
+        },
+        "face_weight": {
+          "node": "32",
+          "field": "weight"
+        },
+        "face_weight_v2": {
+          "node": "32",
+          "field": "weight_faceidv2"
+        },
+        "face_start": {
+          "node": "32",
+          "field": "start_at"
+        },
+        "face_end": {
+          "node": "32",
+          "field": "end_at"
+        },
+        "lora_name": {
+          "node": "30",
+          "field": "lora_name"
+        },
+        "lora_strength": {
+          "node": "30",
+          "field": "strength_model"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        },
+        "region": {
+          "node": "12",
+          "field": "text"
+        }
+      }
+    },
+    "edit-region-box-sdxl": {
+      "kind": "edit_region",
+      "checkpoint": "SD1.5-Inpaint/realisticVisionV60B1_v60B1InpaintingVAE_pruned_fp16.safetensors",
+      "references": {
+        "optional": true,
+        "slots": [
+          "40",
+          "41",
+          "42",
+          "43"
+        ],
+        "batch": [
+          "50",
+          "51",
+          "52"
+        ],
+        "target": {
+          "node": "32",
+          "field": "image"
+        }
+      },
+      "optional_nodes": {
+        "lora": {
+          "node": "30",
+          "outputs": {
+            "0": "model",
+            "1": "clip"
+          },
+          "enabled_by": "lora_name"
+        },
+        "faceid_loader": {
+          "node": "31",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        },
+        "faceid": {
+          "node": "32",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 25,
+        "cfg": 6.5,
+        "grow_mask": 32,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "face_weight": 0.8,
+        "face_weight_v2": 1.0,
+        "face_start": 0.0,
+        "face_end": 1.0,
+        "lora_strength": 0.8
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "grow_mask": [
+          0,
+          64
+        ],
+        "face_weight": [
+          0.0,
+          1.5
+        ],
+        "face_weight_v2": [
+          0.0,
+          2.0
+        ],
+        "face_start": [
+          0.0,
+          1.0
+        ],
+        "face_end": [
+          0.0,
+          1.0
+        ],
+        "lora_strength": [
+          0.0,
+          1.5
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc",
+          "dpmpp_sde"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 1.0,
+        "load_s": 15
+      },
+      "families": [
+        "sd15-inpaint"
+      ],
+      "_region_note": "The inpainting UNet removes the seam. CLIPSeg turns a phrase like 'the sky' into a mask; a box from the plan is rendered into a soft mask by the app and fed to LoadImageMask. The FaceID chain is optional and only present when the plan names a face.",
+      "display": "Place something in a photo",
+      "template": "sdxl_region_box.v1.api.json",
+      "blurb": "Put something new into a chosen area: a person on the bed, a vase on the table.",
+      "requires": [
+        "image",
+        "mask"
+      ],
+      "inputs": [
+        "checkpoint",
+        "prompt",
+        "negative",
+        "image",
+        "mask",
+        "grow_mask",
+        "face_weight",
+        "face_weight_v2",
+        "face_start",
+        "face_end",
+        "lora_name",
+        "lora_strength",
+        "references",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "grow_mask": {
+          "node": "11",
+          "field": "grow_mask_by"
+        },
+        "face_weight": {
+          "node": "32",
+          "field": "weight"
+        },
+        "face_weight_v2": {
+          "node": "32",
+          "field": "weight_faceidv2"
+        },
+        "face_start": {
+          "node": "32",
+          "field": "start_at"
+        },
+        "face_end": {
+          "node": "32",
+          "field": "end_at"
+        },
+        "lora_name": {
+          "node": "30",
+          "field": "lora_name"
+        },
+        "lora_strength": {
+          "node": "30",
+          "field": "strength_model"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        },
+        "mask": {
+          "node": "12",
+          "field": "image"
+        }
+      }
+    },
+    "with-reference-likeness-sdxl": {
+      "kind": "with_reference",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
+      "optional_nodes": {
+        "lora": {
+          "node": "30",
+          "outputs": {
+            "0": "model",
+            "1": "clip"
+          },
+          "enabled_by": "lora_name"
+        },
+        "faceid_loader": {
+          "node": "31",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        },
+        "faceid": {
+          "node": "32",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        },
+        "garment_loader": {
+          "node": "60",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "garment"
+        },
+        "garment_image": {
+          "node": "61",
+          "outputs": {},
+          "enabled_by": "garment"
+        },
+        "garment_adapter": {
+          "node": "62",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "garment"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 28,
+        "cfg": 6.0,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "face_weight": 0.8,
+        "face_weight_v2": 1.0,
+        "face_start": 0.0,
+        "face_end": 1.0,
+        "lora_strength": 0.8
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "face_weight": [
+          0.0,
+          1.5
+        ],
+        "face_weight_v2": [
+          0.0,
+          2.0
+        ],
+        "face_start": [
+          0.0,
+          1.0
+        ],
+        "face_end": [
+          0.0,
+          1.0
+        ],
+        "lora_strength": [
+          0.0,
+          1.5
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc",
+          "dpmpp_sde"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 6.0,
+        "load_s": 45
+      },
+      "_reference_note": "FaceID keeps the person's face; the second IPAdapter chain carries the chosen web reference (a garment, object or place). Both loaders are family-aware, so the same template works on SDXL and SD1.5. The garment chain is optional: without a selected reference this is an ordinary likeness or img2img run.",
+      "display": "Make a picture with a web reference",
+      "template": "sdxl_with_reference_likeness.v1.api.json",
+      "blurb": "Find a garment or object on the web and put it on a person whose face we have.",
+      "requires": [
+        "references"
+      ],
+      "inputs": [
+        "checkpoint",
+        "prompt",
+        "negative",
+        "aspect",
+        "references",
+        "garment",
+        "face_weight",
+        "face_weight_v2",
+        "face_start",
+        "face_end",
+        "lora_name",
+        "lora_strength",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "face_weight": {
+          "node": "32",
+          "field": "weight"
+        },
+        "face_weight_v2": {
+          "node": "32",
+          "field": "weight_faceidv2"
+        },
+        "face_start": {
+          "node": "32",
+          "field": "start_at"
+        },
+        "face_end": {
+          "node": "32",
+          "field": "end_at"
+        },
+        "lora_name": {
+          "node": "30",
+          "field": "lora_name"
+        },
+        "lora_strength": {
+          "node": "30",
+          "field": "strength_model"
+        },
+        "garment": {
+          "node": "61",
+          "field": "image"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        },
+        "width": {
+          "node": "5",
+          "field": "width"
+        },
+        "height": {
+          "node": "5",
+          "field": "height"
+        }
+      },
+      "references": {
+        "slots": [
+          "40",
+          "41",
+          "42",
+          "43"
+        ],
+        "batch": [
+          "50",
+          "51",
+          "52"
+        ],
+        "target": {
+          "node": "32",
+          "field": "image"
+        }
+      },
+      "aspects": {
+        "1:1": [
+          1024,
+          1024
+        ],
+        "3:4": [
+          896,
+          1152
+        ],
+        "4:3": [
+          1152,
+          896
+        ],
+        "9:16": [
+          768,
+          1344
+        ],
+        "16:9": [
+          1344,
+          768
+        ]
+      },
+      "families": [
+        "sdxl"
+      ]
+    },
+    "with-reference-img2img-sdxl": {
+      "kind": "with_reference",
+      "checkpoint": "SDXL/RealVisXL_V5.0_fp16.safetensors",
+      "optional_nodes": {
+        "lora": {
+          "node": "30",
+          "outputs": {
+            "0": "model",
+            "1": "clip"
+          },
+          "enabled_by": "lora_name"
+        },
+        "faceid_loader": {
+          "node": "31",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        },
+        "faceid": {
+          "node": "32",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "references"
+        },
+        "garment_loader": {
+          "node": "60",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "garment"
+        },
+        "garment_image": {
+          "node": "61",
+          "outputs": {},
+          "enabled_by": "garment"
+        },
+        "garment_adapter": {
+          "node": "62",
+          "outputs": {
+            "0": "model"
+          },
+          "enabled_by": "garment"
+        }
+      },
+      "defaults": {
+        "negative": "blurry, low quality, watermark, text, signature, deformed hands, extra limbs",
+        "steps": 28,
+        "cfg": 6.0,
+        "sampler": "dpmpp_2m",
+        "scheduler": "karras",
+        "face_weight": 0.8,
+        "face_weight_v2": 1.0,
+        "face_start": 0.0,
+        "face_end": 1.0,
+        "lora_strength": 0.8,
+        "denoise": 0.55
+      },
+      "limits": {
+        "steps": [
+          1,
+          60
+        ],
+        "cfg": [
+          1.0,
+          15.0
+        ],
+        "face_weight": [
+          0.0,
+          1.5
+        ],
+        "face_weight_v2": [
+          0.0,
+          2.0
+        ],
+        "face_start": [
+          0.0,
+          1.0
+        ],
+        "face_end": [
+          0.0,
+          1.0
+        ],
+        "lora_strength": [
+          0.0,
+          1.5
+        ],
+        "denoise": [
+          0.3,
+          0.85
+        ]
+      },
+      "choices": {
+        "sampler": [
+          "dpmpp_2m",
+          "dpmpp_2m_sde",
+          "dpmpp_3m_sde",
+          "euler",
+          "euler_ancestral",
+          "ddim",
+          "uni_pc",
+          "dpmpp_sde"
+        ],
+        "scheduler": [
+          "karras",
+          "normal",
+          "simple",
+          "sgm_uniform",
+          "exponential",
+          "beta"
+        ]
+      },
+      "progress_node": "3",
+      "output_node": "9",
+      "est": {
+        "seconds_per_step": 6.0,
+        "load_s": 45
+      },
+      "_reference_note": "FaceID keeps the person's face; the second IPAdapter chain carries the chosen web reference (a garment, object or place). Both loaders are family-aware, so the same template works on SDXL and SD1.5. The garment chain is optional: without a selected reference this is an ordinary likeness or img2img run.",
+      "display": "Put a web reference on a photo",
+      "template": "sdxl_with_reference_img2img.v1.api.json",
+      "blurb": "Find a garment or object on the web and add it to a photo of your own.",
+      "requires": [
+        "image"
+      ],
+      "inputs": [
+        "checkpoint",
+        "prompt",
+        "negative",
+        "image",
+        "denoise",
+        "references",
+        "garment",
+        "face_weight",
+        "face_weight_v2",
+        "face_start",
+        "face_end",
+        "lora_name",
+        "lora_strength",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler",
+        "scheduler"
+      ],
+      "params": {
+        "prompt": {
+          "node": "6",
+          "field": "text"
+        },
+        "negative": {
+          "node": "7",
+          "field": "text"
+        },
+        "face_weight": {
+          "node": "32",
+          "field": "weight"
+        },
+        "face_weight_v2": {
+          "node": "32",
+          "field": "weight_faceidv2"
+        },
+        "face_start": {
+          "node": "32",
+          "field": "start_at"
+        },
+        "face_end": {
+          "node": "32",
+          "field": "end_at"
+        },
+        "lora_name": {
+          "node": "30",
+          "field": "lora_name"
+        },
+        "lora_strength": {
+          "node": "30",
+          "field": "strength_model"
+        },
+        "garment": {
+          "node": "61",
+          "field": "image"
+        },
+        "seed": {
+          "node": "3",
+          "field": "seed"
+        },
+        "steps": {
+          "node": "3",
+          "field": "steps"
+        },
+        "cfg": {
+          "node": "3",
+          "field": "cfg"
+        },
+        "sampler": {
+          "node": "3",
+          "field": "sampler_name"
+        },
+        "scheduler": {
+          "node": "3",
+          "field": "scheduler"
+        },
+        "checkpoint": {
+          "node": "4",
+          "field": "ckpt_name"
+        },
+        "image": {
+          "node": "10",
+          "field": "image"
+        },
+        "denoise": {
+          "node": "3",
+          "field": "denoise"
+        }
+      },
+      "references": {
+        "optional": true,
+        "slots": [
+          "40",
+          "41",
+          "42",
+          "43"
+        ],
+        "batch": [
+          "50",
+          "51",
+          "52"
+        ],
+        "target": {
+          "node": "32",
+          "field": "image"
+        }
+      },
+      "families": [
+        "sdxl",
+        "sd15"
       ]
     }
   }

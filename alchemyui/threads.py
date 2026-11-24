@@ -31,7 +31,7 @@ from .comfy import ComfyClient
 from .config import Settings
 from .db import Database, now
 from .faces import FaceRejected, normalise_reference
-from .jobs import JobRejected, image_as_upload, image_public, job_public, submit_jobs
+from .jobs import JobRejected, attach_mask, image_as_upload, image_public, job_public, submit_jobs
 from .planner.client import LLMClient
 from .planner.policy import NeedsInput, PolicyContext, compile_plan
 from .planner.prompt import Attachment, thumbnail
@@ -39,7 +39,8 @@ from .planner.router import Router, RouteRequest
 from .planner.schema import Plan, Vocabulary, face_handles
 from .queue import TERMINAL, JobState, QueueManager
 from .registry import Registry
-from .storage import save_upload
+from .search import SearchError, fetch_reference, image_search
+from .storage import UploadRejected, mask_from_box, save_upload
 
 log = logging.getLogger("alchemyui.threads")
 
@@ -216,7 +217,8 @@ class ChatEngine:
         if row["question_json"] and row["state"] == TurnState.NEEDS_INPUT:
             q = json.loads(row["question_json"])
             question = {"question": q["question"],
-                        "options": [o["label"] for o in q.get("options") or []]}
+                        "options": [o["label"] for o in q.get("options") or []],
+                        "candidates": q.get("candidates") or []}
         return {
             "id": row["id"], "thread_id": row["thread_id"], "seq": row["seq"],
             "text": row["text"],
@@ -326,7 +328,9 @@ class ChatEngine:
             await self._set(turn_id, state=TurnState.PLANNING.value, question_json=None,
                             reply=None, answers_json=json.dumps(answers))
         await self._emit(turn_id)
-        self._spawn(turn_id, forced, "default" if forced else None)
+        # A forced option is still the router's plan (e.g. a reference pick).
+        # Only the no-LLM default planner should be labelled "offline".
+        self._spawn(turn_id, forced, row["plan_source"] or "default")
         return await self.turn_public(await self._row(turn_id))
 
     async def cancel(self, user_id: int, turn_id: str) -> dict:
@@ -504,6 +508,24 @@ class ChatEngine:
                                             "chip": chip or "Needs your answer"})
         await self._set(turn_id, **cols)
 
+    async def _reference_question(self, plan: Plan) -> dict:
+        """Search once, then return the candidate picker. Reused when a chosen
+        image turns out to be unfetchable, so the person can pick another."""
+        results = await image_search(plan.search, self.cfg)
+        if not results:
+            return {"question": f'I couldn\'t find any images for "{plan.search}". '
+                                  "Try different words, or attach a photo instead.",
+                    "options": [], "candidates": []}
+        options, candidates = [], []
+        for c in results:
+            chosen = Plan.from_dict({**plan.as_dict(), "reference": c["url"]})
+            options.append({"label": c["title"] or "Use this image",
+                            "plan": chosen.as_dict()})
+            candidates.append({"title": c["title"], "source": c["source"],
+                               "thumb_url": c["thumb_url"]})
+        return {"question": f"Which reference should I use for \"{plan.search}\"?",
+                "options": options, "candidates": candidates}
+
     async def _execute(self, row, scope: Scope, plan: Plan, source: str) -> None:
         turn_id, user_id = row["id"], row["user_id"]
         suffix = SOURCE_SUFFIX.get(source, "")
@@ -513,6 +535,16 @@ class ChatEngine:
             raise TurnError(f"the plan named {plan.source}, which is not in this conversation")
         if plan.faces and plan.faces not in scope.faces:
             raise TurnError(f"the plan named {plan.faces}, which is not a face you provided")
+
+        if plan.action == "with_reference" and not plan.reference:
+            try:
+                question = await self._reference_question(plan)
+            except SearchError as e:
+                question = {"question": str(e), "options": [], "candidates": []}
+            async with self._lock:
+                await self._park(turn_id, question, plan, "Needs your pick" + suffix)
+            await self._emit(turn_id)
+            return
 
         upload, size = None, None
         if plan.source in scope.attachments:
@@ -549,7 +581,33 @@ class ChatEngine:
                                            scope.outputs[plan.source], user_id)
         if "image" in workflow.requires:
             raw["image"] = upload["comfy_name"]
-        if plan.action == "likeness":
+        if plan.action == "with_reference" and plan.reference:
+            try:
+                png, _, _ = await fetch_reference(plan.reference, self.cfg)
+            except SearchError as e:
+                try:
+                    question = await self._reference_question(plan)
+                    question["question"] = f"{e} Pick another image:"
+                except SearchError as again:
+                    question = {"question": str(again), "options": [], "candidates": []}
+                async with self._lock:
+                    await self._park(turn_id, question, plan, "Needs another pick" + suffix)
+                await self._emit(turn_id)
+                return
+            raw["garment"] = await self.comfy.upload_image(png, f"web-{uuid.uuid4().hex}.png")
+        if plan.action == "edit_region" and compiled.region_mode == "box":
+            if upload is None:
+                raise TurnError("the plan named a source that is no longer available")
+            try:
+                png = mask_from_box(upload["width"], upload["height"], compiled.box)
+                raw["mask"] = await attach_mask(self.db, self.comfy, self.cfg, upload, png)
+            except UploadRejected as e:
+                async with self._lock:
+                    await self._park(turn_id, {"question": str(e), "options": []}, plan,
+                                     "Needs a different area" + suffix)
+                await self._emit(turn_id)
+                return
+        if plan.action in ("likeness", "edit_region", "with_reference") and plan.faces:
             try:
                 raw["references"] = await self._faces(scope, plan.faces, user_id)
             except FaceRejected as e:

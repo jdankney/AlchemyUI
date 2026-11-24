@@ -147,6 +147,16 @@ class Settings(BaseSettings):
     router_context_turns: int = 6
     router_thumb_edge: int = 768
 
+    # --- web references (Phase 9) -------------------------------------------
+    # A SearXNG instance with the JSON API enabled. The app sends only the
+    # search phrase; images are fetched only after the person picks one.
+    search_url: str = ""
+    search_timeout_s: float = 15.0
+    search_results: int = 8
+    search_max_mb: float = 12.0
+    search_max_redirects: int = 3
+    search_user_agent: str = "AlchemyUI/0.1 (+self-hosted image generator)"
+
     # ----------------------------------------------------------------------
     @property
     def is_dev(self) -> bool:

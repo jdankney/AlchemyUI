@@ -1,0 +1,95 @@
+{
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 25,
+      "cfg": 6.5,
+      "sampler_name": "dpmpp_2m",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["32", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["11", 0]
+    }
+  },
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {"ckpt_name": "realisticVisionV60B1_v60B1InpaintingVAE_pruned_fp16.safetensors"}
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["30", 1]}
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {"text": "", "clip": ["30", 1]}
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {"images": ["8", 0], "filename_prefix": "alchemyui_region"}
+  },
+  "10": {
+    "class_type": "LoadImage",
+    "inputs": {"image": "example.png"}
+  },
+  "11": {
+    "class_type": "VAEEncodeForInpaint",
+    "inputs": {
+      "pixels": ["10", 0],
+      "vae": ["4", 2],
+      "mask": ["12", 0],
+      "grow_mask_by": 32
+    }
+  },
+  "12": {
+    "class_type": "LoadImageMask",
+    "inputs": {"image": "example.png", "channel": "red"}
+  },
+  "30": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": ["4", 0],
+      "clip": ["4", 1],
+      "lora_name": "ip-adapter-faceid-plusv2_sd15_lora.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8
+    }
+  },
+  "31": {
+    "class_type": "IPAdapterUnifiedLoaderFaceID",
+    "inputs": {
+      "model": ["30", 0],
+      "preset": "FACEID PLUS V2",
+      "lora_strength": 0.6,
+      "provider": "CPU"
+    }
+  },
+  "32": {
+    "class_type": "IPAdapterFaceID",
+    "inputs": {
+      "model": ["31", 0],
+      "ipadapter": ["31", 1],
+      "image": ["52", 0],
+      "weight": 0.8,
+      "weight_faceidv2": 1.0,
+      "weight_type": "linear",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "embeds_scaling": "V only"
+    }
+  },
+  "40": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+  "41": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+  "42": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+  "43": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+  "50": {"class_type": "ImageBatch", "inputs": {"image1": ["40", 0], "image2": ["41", 0]}},
+  "51": {"class_type": "ImageBatch", "inputs": {"image1": ["50", 0], "image2": ["42", 0]}},
+  "52": {"class_type": "ImageBatch", "inputs": {"image1": ["51", 0], "image2": ["43", 0]}}
+}

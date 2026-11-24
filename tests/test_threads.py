@@ -116,7 +116,8 @@ async def test_ask_parks_without_a_queue_place_and_an_answer_replans(engine_harn
     t = await h.engine.create_turn(h.alice, "hmm", [])
     parked = await settle(h, t["id"])
     assert parked["state"] == "needs_input" and parked["jobs"] == []
-    assert parked["question"] == {"question": "Which one?", "options": ["1", "2"]}
+    assert parked["question"] == {"question": "Which one?", "options": ["1", "2"],
+                                  "candidates": []}
     assert h.qm.snapshot()["depth"] == 0
     await h.engine.answer(h.alice, t["id"], None, 1)
     await settle(h, t["id"], ("queued",))

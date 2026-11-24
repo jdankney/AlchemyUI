@@ -634,7 +634,7 @@ Added 2026-09-28 at the author's request. The design is in
     message by more than an interrupt, and an adopted setting shows up in the
     next pinned message.
 
-### Phase 8 — Region-aware editing
+### Phase 8 — Region-aware editing (complete, 2026-11-20)
 
 - A segmentation custom node plus model, chosen by measuring on 6GB. The
   candidates are CLIPSeg (small and coarse) and GroundingDINO + SAM (accurate
@@ -649,7 +649,7 @@ Added 2026-09-28 at the author's request. The design is in
 - **Acceptance:** example 3 works. Expect "convincingly approximate", not
   Photoshop.
 
-### Phase 9 — Web references
+### Phase 9 — Web references (code and models in; awaiting a SearXNG URL)
 
 - SearXNG image search. Llamacracy's instance listens on loopback on
   `gpu-server`, so the first task is deciding how the laptop reaches it

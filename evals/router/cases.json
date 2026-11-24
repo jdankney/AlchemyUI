@@ -35,7 +35,9 @@
    "a2"
   ],
   "expect": {
-   "action": "ask"
+   "action": "edit_region",
+   "source": "a2",
+   "faces": "a1"
   }
  },
  {
@@ -47,6 +49,7 @@
   "sources": [],
   "expect": {
    "action": [
+    "with_reference",
     "ask",
     "likeness"
    ]
@@ -103,6 +106,7 @@
   ],
   "expect": {
    "action": [
+    "edit_region",
     "transform",
     "ask"
    ],

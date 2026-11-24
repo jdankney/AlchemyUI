@@ -163,6 +163,44 @@ def normalise_mask(data: bytes, width: int, height: int) -> bytes:
     return buf.getvalue()
 
 
+def mask_from_box(width: int, height: int, box, feather: int | None = None) -> bytes:
+    """A white-on-black inpainting mask for a normalized box from the router.
+
+    The vision model gives box coordinates on a 0..1000 scale; this is where
+    that becomes pixels. The box is deliberately soft-edged: a hard rectangle
+    leaves a visible seam, which is the same reason the inpaint workflow grows
+    the mask. White means repaint, matching normalise_mask and LoadImageMask.
+    """
+    from PIL import Image, ImageDraw, ImageFilter
+
+    if len(box) != 4:
+        raise UploadRejected("a box edit needs four coordinates")
+    try:
+        x1, y1, x2, y2 = (int(round(v / 1000 * (width if i % 2 == 0 else height)))
+                          for i, v in enumerate(box))
+    except (TypeError, ValueError):
+        raise UploadRejected("the box coordinates must be numbers")
+    x1, x2 = max(0, min(width, x1)), max(0, min(width, x2))
+    y1, y2 = max(0, min(height, y1)), max(0, min(height, y2))
+    if x2 - x1 < 8 or y2 - y1 < 8:
+        raise UploadRejected("the selected area is too small to edit")
+
+    mask = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(mask)
+    # A portrait-ish insert should not have square shoulders; rounded corners
+    # read better than a rectangle and still leave the model room to work.
+    radius = max(4, min(x2 - x1, y2 - y1) // 8)
+    draw.rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=255)
+    blur = max(2, int(feather if feather is not None else max(width, height) * 0.012))
+    # Keep the soft edge rather than thresholding it away: ComfyUI's mask is
+    # a float image, and a gradient at the boundary is what stops a seam.
+    mask = mask.filter(ImageFilter.GaussianBlur(blur))
+
+    buf = io.BytesIO()
+    mask.convert("RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def save_upload(upload_dir: str | Path, data: bytes, stem: str, suffix: str = ".png") -> str:
     d = Path(upload_dir)
     d.mkdir(parents=True, exist_ok=True)

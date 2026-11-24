@@ -18,6 +18,10 @@ MEANING = {
     "enhance": "sharpen, upscale or fix the faces in an existing image, keeping it the same",
     "likeness": "a new image of a person whose face we have: 'me as an astronaut'",
     "extend": "make an existing image bigger by painting beyond its edges",
+    "edit_region": "change one part of an existing image: replace something that is there "
+                   "('the sky', 'the dog') or put something new into it ('me, on the bed')",
+    "with_reference": "find a reference picture on the web (a garment, an object, a place) "
+                      "and use it to make or edit an image",
     "select": "the user only picks which earlier image to work from next ('use the second one')",
     "ask": "you cannot tell what they want, or they want something we cannot do yet",
 }
@@ -62,14 +66,27 @@ Rules:
 - count: how many images they asked for (default 1).
 - aspect: {', '.join(vocab.aspects)}. Portraits 3:4, landscapes 16:9, otherwise 1:1.
 - direction: for extend only: {', '.join(DIRECTIONS[1:])}. Otherwise "".
+- search and reference: for with_reference only. search is a short web image
+  query ("Nike Pro sweatpants product photo"); reference is always "" -- the app
+  fills it after the person picks a result. Otherwise "" and "".
+- region and region_mode: for edit_region only. region is the part to change, in a few
+  words ("the sky", "the dog"). region_mode is "segment" when replacing something that
+  is already there, or "box" when placing something new. Otherwise "" and "".
+- box: for a box edit, [x1, y1, x2, y2] on a 0..1000 scale (top-left is 0,0). For
+  "add me to the bed", put a portrait-shaped box where the person should appear. []
+  otherwise. Never put a box outside the image.
 - question and options: for ask only, with up to 4 short options. Otherwise "" and [].
 - Follow-ups like "make it darker" work on the current image.
 - If the conversation says "none picked yet" and the message does not say which image,
   ask which one, with options like "Image 1" and "Image 2".
-- We cannot yet: put a person into a particular photo; add or remove one particular
-  thing in a photo; change only one part of a photo; combine two photos. For any of
-  those, ask, and offer what we can do instead: a brand-new picture, or restyling the
-  whole photo.
+- For edit_region, source is the photo to change; the prompt describes what the changed
+  region should contain, not a whole new picture. If a different attachment shows the
+  person's face, put that attachment in faces.
+- For with_reference, search names the garment or object to find. If there is a photo to
+  edit, put it in source; otherwise use faces ("me" or an attachment) and the app will
+  make a new picture of that person wearing or holding the reference.
+- If they want two photos combined into one, ask which photo should be changed and what
+  should go into it; that is an edit_region, not a new picture.
 - "Me" with an attached photo of a face and no saved likeness: faces is that attachment."""
 
 

@@ -25,10 +25,12 @@ def _raw(**kw):
 
 
 def test_vocabulary_comes_from_the_registry():
-    assert V.actions == ("generate", "transform", "enhance", "likeness", "extend", "select", "ask")
+    assert V.actions == ("generate", "transform", "enhance", "likeness", "extend",
+                         "edit_region", "with_reference", "select", "ask")
     assert V.workflows["generate"] == "txt2img-sdxl"      # never the -hq variant
     assert V.workflows["extend"] == "outpaint-sdxl"
-    assert "edit_region" not in V.actions and "with_reference" not in V.actions
+    assert V.workflows["edit_region"] == "edit-region-sdxl"
+    assert V.workflows["with_reference"] == "with-reference-likeness-sdxl"
     assert V.aspects == ("1:1", "3:4", "4:3", "9:16", "16:9")
 
 
@@ -55,7 +57,10 @@ def test_valid_plan_round_trips():
 
 @pytest.mark.parametrize("raw, why", [
     ("not json", "not valid JSON"),
-    (_raw(action="edit_region"), "action"),
+    (_raw(action="edit_region", source="a1"), "needs region"),
+    (_raw(action="edit_region", source="a1", region_mode="box"), "needs box"),
+    (_raw(action="edit_region", source="a1", region_mode="box", box=[10, 20, 5, 30]),
+     "right/bottom"),
     (_raw(action="transform", source=""), "needs a source image"),
     (_raw(action="transform", source="t9.9"), "t9.9"),
     (_raw(action="generate", source="a1"), "generate makes a new image"),

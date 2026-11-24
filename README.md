@@ -31,9 +31,10 @@ private to its owner, strict FIFO across people, energy and electricity cost
 per person, and a live admin page.
 
 > **v2 is being built in phases.** Phases 6 (multi-user), 7 (the chat and
-> its router) and 7.5 (the Alchemy UI, the model switcher and the Photoreal Lab)
-> are in. Phase 8 adds editing one part of a photo, Phase 9 web
-> references ("me in Nike Pro sweatpants"). See [Roadmap](#roadmap).
+> its router), 7.5 (the Alchemy UI, the model switcher and the Photoreal Lab)
+> and 8 (editing one part of a photo) are in. Phase 9 (web references, "me in
+> Nike Pro sweatpants") is wired end to end and needs a SearXNG URL. See
+> [Roadmap](#roadmap).
 
 Underneath the chat, everything v1 built is still there: SDXL and SD1.5
 generation, img2img, inpainting on a dedicated inpainting UNet, outpainting,
@@ -126,6 +127,19 @@ AlchemyUI also reads InsightFace's `buffalo_l` models directly, to check
 reference faces as they are uploaded — set `INSIGHTFACE_ROOT` if ComfyUI is
 not at `~/ComfyUI`.
 
+Region edits add two more requirements:
+
+- **CLIPSeg for changing something that is already there.** Install the
+  `ComfyUI-CLIPSeg` custom node (the maintained `zhengxyz123` fork; the
+  original repo is gone) and let it download `CIDAS/clipseg-rd64-refined` on
+  first use. The app draws the mask itself for a box placement, so only the
+  text-region path needs this node.
+- **IPAdapter Plus for web references.** `ip-adapter-plus_sd15.bin` and
+  `ip-adapter-plus_sdxl_vit-h.bin` in `models/ipadapter/`. The existing
+  `CLIP-ViT-H-14` and FaceID LoRAs are reused.
+
+`alchemyui validate --live` names any of these that are missing.
+
 ---
 
 ### The router
@@ -153,6 +167,35 @@ uv run alchemyui router-eval --backend primary --only ex3-me-into-my-bed
 
 The report lands in `data/router-eval/`. It is how the primary model was
 chosen, and what to rerun after changing the prompt.
+
+### Editing one part of a photo (Phase 8)
+
+- **"Change the sky"** becomes `edit_region` with a phrase. CLIPSeg turns
+  that phrase into a mask, and the SD1.5 inpainting UNet repaints only there.
+- **"Add me to my bed"** becomes a normalized box. The app draws a soft
+  mask for the box, and optionally adds FaceID from the attachment that
+  shows the person's face. The box comes from the router's vision model.
+- Both paths run on the dedicated inpainting checkpoint and use the same
+  queue, GPU metering and cancellation as every other job.
+
+### Web references (Phase 9)
+
+Set `SEARCH_URL` to a SearXNG instance with the JSON API enabled. Then:
+
+1. "Me in Nike Pro sweatpants" becomes `with_reference` with a short image
+   search phrase.
+2. The app sends only that phrase to SearXNG and parks the turn with a grid
+   of candidates. Nothing is auto-picked.
+3. You pick one; the app downloads it with an SSRF-safe fetcher (public
+   addresses only, redirects re-checked, size cap, Pillow decode/re-encode),
+   and applies it with IPAdapter Plus. FaceID keeps your face, and the
+   reference carries the garment or object.
+4. With a photo attached, the reference is applied as an img2img edit; with
+   no photo, it makes a new picture of your saved likeness wearing it.
+
+The search endpoint is trusted config, but every result image is untrusted
+input. The browser never receives the remote bytes through the app; it sees
+only the candidate thumbnails.
 
 ---
 
@@ -287,7 +330,7 @@ from `est`), so the ETA is measured rather than invented.
 ## Development
 
 ```bash
-uv run pytest -q          # 346 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
+uv run pytest -q          # 382 tests: no GPU, no ComfyUI, no LLM; node for the front-end boot tests
 uv run ruff check .
 ```
 
@@ -307,7 +350,8 @@ alchemyui/        app.py routes+SSE · queue.py the FIFO · comfy.py the client
                   jobs.py plan -> queued jobs · registry.py workflows
                   storage.py files+uploads · faces.py likeness validation
                   identity.py users · admin.py /api/admin · power.py nvidia-smi
-                  meter.py energy and cost · evals.py router-eval
+                  meter.py energy and cost · search.py SearXNG + safe reference fetch
+                  evals.py router-eval
                   profiles.py tuned model defaults · lab.py, lab_api.py the Photoreal Lab
                   cli.py validate, reassign, router-eval
 alchemyui/static/ index.html, admin.html, lab.html · assets/ app.js, admin.js, lab.js, styles.css
@@ -334,8 +378,8 @@ starts. The details are in [`ALCHEMYUI_SPEC.md`](ALCHEMYUI_SPEC.md) §14.
 | 6 | **Multi-user platform. Done.** Dex accounts via oauth2-proxy, everything scoped per user, strict FIFO across users, energy and cost per job, and a live admin page. The fixed model catalogue and the SD1.5 inpaint models also land here. |
 | 7 | **Chat UI and router. Done.** One prompt box with attachments, threads, and a planner LLM (Llamacracy, with a CPU-only local fallback) that turns each message into a validated plan. |
 | 7.5 | **Alchemy UI, model choice, Photoreal Lab. Done.** A new look with images as the star, a per-message model switcher, and an admin Lab that benchmarks settings and adopts the winners as per-model defaults. |
-| 8 | **Region-aware editing.** "Add me to my bed", "change the sky": segmentation, then inpaint. |
-| 9 | **Web references.** "Me in Nike Pro sweatpants": search, pick, use as reference. |
+| 8 | **Region-aware editing. Done.** "Add me to my bed", "change the sky": text segmentation or a box mask, then inpaint. |
+| 9 | **Web references. Code and models in; needs `SEARCH_URL`.** "Me in Nike Pro sweatpants": search, pick, fetch safely, apply with IPAdapter Plus. |
 
 The design principle that holds it together: **the LLM writes a plan in a
 closed vocabulary, never a graph.** The registry turns the plan into a

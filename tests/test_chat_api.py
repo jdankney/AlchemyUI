@@ -97,7 +97,8 @@ def test_answer_cancel_retry_and_delete(client):
                              RouteResult(P(), "primary")]
     t = _turn(client, A, "hmm")
     turns = _wait_state(client, A, t["thread_id"], "needs_input")
-    assert turns[0]["question"] == {"question": "Which?", "options": ["A", "B"]}
+    assert turns[0]["question"] == {"question": "Which?", "options": ["A", "B"],
+                                      "candidates": []}
     r = client.post(f"/api/turns/{t['id']}/answer", headers=A, json={"option": 0})
     assert r.status_code == 200
     _wait_state(client, A, t["thread_id"])

@@ -426,7 +426,9 @@ class GenerateRequest(BaseModel):
     # Phase 2. `image_id` refers to an /api/uploads row; the graph never sees
     # a path the browser chose, only the ComfyUI filename we recorded.
     image_id: str | None = None
+    garment_id: str | None = None
     denoise: float | None = None
+    region: str | None = None
     grow_mask: int | None = None
     pad_left: int | None = None
     pad_top: int | None = None
@@ -487,11 +489,22 @@ async def generate(req: GenerateRequest,
                 raise HTTPException(400, "brush over the area you want changed first")
             raw["mask"] = upload["mask_comfy_name"]
 
-    if "references" in workflow.requires:
+    if req.garment_id:
+        if "garment" not in workflow.params:
+            raise HTTPException(400, f"{workflow.display} cannot use a web reference")
+        garment = await db.fetch_one("SELECT * FROM uploads WHERE id = ? AND user_id = ?",
+                                    (req.garment_id, principal.user_id))
+        if garment is None:
+            raise HTTPException(404, "no such reference image")
+        raw["garment"] = garment["comfy_name"]
+
+    if "references" in workflow.requires or req.reference_ids:
+        if workflow.references is None:
+            raise HTTPException(400, f"{workflow.display} cannot use reference photos")
         ids = req.reference_ids or []
-        if not ids:
+        if not ids and "references" in workflow.requires:
             raise HTTPException(400, "add at least one reference photo of the face")
-        limit = workflow.references.max if workflow.references else len(ids)
+        limit = workflow.references.max
         if len(ids) > limit:
             raise HTTPException(400, f"at most {limit} reference photos")
         rows = []
@@ -501,11 +514,12 @@ async def generate(req: GenerateRequest,
             if row is None:
                 raise HTTPException(404, f"reference {ref_id} is no longer available")
             rows.append(row)
-        raw["references"] = [r["comfy_name"] for r in rows]
-        # A personal LoRA and FaceID both encode identity, and at full strength
-        # they fight. Unless a weight was chosen explicitly, start lower.
-        if req.lora_name and req.face_weight is None:
-            raw["face_weight"] = settings.lora_face_weight
+        if rows:
+            raw["references"] = [r["comfy_name"] for r in rows]
+            # A personal LoRA and FaceID both encode identity, and at full strength
+            # they fight. Unless a weight was chosen explicitly, start lower.
+            if req.lora_name and req.face_weight is None:
+                raw["face_weight"] = settings.lora_face_weight
 
     chosen = None
     if req.checkpoint:

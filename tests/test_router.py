@@ -127,7 +127,7 @@ def test_system_prompt_lists_only_the_vocabulary():
     sp = system_prompt(V)
     for a in V.actions:
         assert f"- {a}:" in sp
-    assert "edit_region" not in sp and "with_reference" not in sp
+    assert "edit_region" in sp and "with_reference" in sp
 
 
 # --- router --------------------------------------------------------------------

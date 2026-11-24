@@ -18,7 +18,8 @@ DENOISE = {"subtle": 0.35, "medium": 0.55, "strong": 0.75}
 # image stays on SD1.5 whatever quality was asked for.
 SDXL_MIN_SOURCE_EDGE = 900
 VERB = {"generate": "Generating", "transform": "Transforming", "enhance": "Enhancing",
-        "likeness": "Generating you", "extend": "Extending"}
+        "likeness": "Generating you", "extend": "Extending", "edit_region": "Editing",
+        "with_reference": "Using a web reference"}
 # Only these make several images; one enhance or extend of the same source
 # four times over is the same picture four times.
 COUNTABLE = ("generate", "transform", "likeness")
@@ -42,6 +43,11 @@ class Compiled:
     chip: str                              # "Generating · Realistic Vision 6.0 · 3:4"
     pinned: str | None = None              # what the person picked, whether or not it was used
     note: str = ""                         # why the pick was not used, when it was not
+    region: str = ""                       # Phase 8: what part of the source to change
+    region_mode: str = ""                  # segment | box
+    box: tuple[int, int, int, int] | tuple = ()  # normalized 0..1000, for a box edit
+    search: str = ""                       # Phase 9: web image query
+    reference: str = ""                    # Phase 9: the chosen candidate URL
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -101,14 +107,35 @@ def compile_plan(plan: Plan, vocab: Vocabulary, reg: Registry, ctx: PolicyContex
         raise NeedsInput(plan.question, [{"label": o, "plan": None} for o in plan.options])
     if plan.action == "select":
         return Compiled("select", None, None, {}, 0, "Working from the image you picked")
-    if plan.action == "likeness" and plan.faces == "me" and not ctx.has_likeness:
+    if plan.action in ("likeness", "edit_region") and plan.faces == "me" \
+            and not ctx.has_likeness:
         raise NeedsInput("You haven't saved a likeness yet. Attach a clear photo of your "
                          "face, or add some in Settings, then ask again.")
 
-    workflow = reg.require(vocab.workflows[plan.action])
+    if plan.action == "with_reference" and plan.faces == "me" and not ctx.has_likeness:
+        raise NeedsInput("You haven't saved a likeness yet. Attach a clear photo of your "
+                         "face, or add some in Settings, then ask again.")
+
+    region_mode = plan.region_mode
+    if plan.action == "edit_region" and not region_mode:
+        # A plan built by the engine (a retry, or a default option) may not
+        # have gone through validate_plan; infer the obvious mode rather than
+        # choosing the wrong workflow.
+        region_mode = "box" if plan.box else "segment" if plan.region else ""
+    if plan.action == "with_reference":
+        workflow = reg.require("with-reference-img2img-sdxl" if plan.source
+                               else "with-reference-likeness-sdxl")
+    elif plan.action == "edit_region":
+        workflow = reg.require("edit-region-box-sdxl" if region_mode == "box"
+                               else "edit-region-sdxl")
+    else:
+        workflow = reg.require(vocab.workflows[plan.action])
     family = None
-    if plan.action == "extend":
+    if plan.action in ("extend", "edit_region"):
         trait = "inpaint"
+    elif plan.action == "with_reference":
+        trait = ("quality" if not plan.source or not ctx.source_size
+                 or max(ctx.source_size) >= SDXL_MIN_SOURCE_EDGE else "fast")
     elif plan.quality == "best":
         trait = "quality"
     else:
@@ -128,15 +155,28 @@ def compile_plan(plan: Plan, vocab: Vocabulary, reg: Registry, ctx: PolicyContex
         raw["aspect"] = plan.aspect
     if plan.action == "transform":
         raw["denoise"] = DENOISE[plan.strength]
+    if plan.action == "with_reference":
+        raw["denoise"] = DENOISE[plan.strength]
     if plan.action == "extend":
         raw.update(_pads(plan.direction, ctx.source_size))
+    if plan.action == "edit_region" and region_mode == "segment":
+        raw["region"] = plan.region
 
     count = plan.count if plan.action in COUNTABLE else 1
-    parts = [VERB[plan.action] + (f" {count}" if count > 1 else ""), ck.label]
+    if plan.action == "edit_region":
+        parts = (["Editing", plan.region] if region_mode == "segment"
+                 else ["Placing"])
+        parts.append(ck.label)
+    elif plan.action == "with_reference":
+        parts = ["Using a web reference" if plan.reference else "Finding a reference",
+                 ck.label]
+    else:
+        parts = [VERB[plan.action] + (f" {count}" if count > 1 else ""), ck.label]
     if "aspect" in raw:
         parts.append(plan.aspect)
     return Compiled(plan.action, workflow.key, ck.name, raw, count, " · ".join(parts),
-                    ctx.pinned, note)
+                    ctx.pinned, note, plan.region, region_mode, plan.box,
+                    plan.search, plan.reference)
 
 
 def _honour_pin(reg: Registry, workflow: WorkflowInfo, plan: Plan, ctx: PolicyContext,
@@ -149,6 +189,8 @@ def _honour_pin(reg: Registry, workflow: WorkflowInfo, plan: Plan, ctx: PolicyCo
         return picked, ""
     if plan.action == "extend":
         return picked, f"Not {pin.label}: extending always uses the inpainting model."
+    if plan.action == "edit_region":
+        return picked, f"Not {pin.label}: editing part of a photo uses the inpainting model."
     if pin.family not in workflow.families:
         return picked, f"Not {pin.label}: this needs an SDXL model."
     if (plan.action == "transform" and pin.family == "sdxl" and ctx.source_size
