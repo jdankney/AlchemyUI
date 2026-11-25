@@ -134,7 +134,7 @@ registry that uses bare filenames will not find them.
     model that isn't loaded will trigger a swap on that box.
   - **Verified 2026-09-25** with the `alchemyui` account's key, from the
     laptop:
-    - `http://gpu-server.netbird.example/v1` and `http://llamacracy.example/v1`
+    - Llamacracy's NetBird URL and its public URL (both `…/v1`)
       both answer in about 0.1s.
     - `response_format: json_schema` is **enforced**: a model explicitly told
       to ignore the format and reply in prose still returned schema-valid JSON

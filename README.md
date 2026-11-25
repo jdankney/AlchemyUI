@@ -397,3 +397,14 @@ ComfyUI graph and validates it exactly as it does today.
 
 A node graph editor, billing or usage limits, an OpenAI-compatible API, model
 downloading, cloud GPUs, video. See `ALCHEMYUI_SPEC.md` §15.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE), like Llamacracy. You can use, study, change and
+share it. If you run a modified version as a service that other people use
+over a network, you must offer those users its source code under the same
+license. Running it unmodified, or changing it only for yourself, asks nothing
+of you.
+
+The bundled fonts (Sora and JetBrains Mono, in `alchemyui/static/assets/fonts`)
+keep their own SIL Open Font License; see the `OFL-*.txt` files beside them.
