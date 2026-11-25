@@ -12,11 +12,14 @@
 <link rel="stylesheet" href="/assets/styles.css">
 <!-- No CDN at all. Llamacracy pulls marked/DOMPurify/KaTeX because it renders
      model markdown; there is none here. The fonts (Sora, JetBrains Mono, OFL)
-     ship in /assets/fonts, so nothing is fetched from anyone else. -->
+     ship in /assets/fonts, so nothing is fetched from anyone else -- except
+     web-reference thumbnails, which load from their own hosts with no referrer. -->
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="alc-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#a874ff"/><stop offset=".55" stop-color="#d49ad6"/><stop offset="1" stop-color="#f0b85a"/></linearGradient></defs></svg>
 <div id="app"></div>
+<!-- Outside #app so a re-render never wipes a toast that was just shown. -->
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <script type="module" src="/assets/app.js"></script>
 </body>
 </html>

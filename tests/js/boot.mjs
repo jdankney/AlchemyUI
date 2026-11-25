@@ -12,19 +12,45 @@ const requests = [];
 let error = null;
 
 const ctx2d = () => new Proxy({}, { get: () => () => ({}) });
+// Just enough of a tree for the in-place patcher: parents, order, removal.
+function detach(k) {
+  const par = k && k.parentNode;
+  if (!par) return;
+  const i = par.childNodes.indexOf(k);
+  if (i >= 0) par.childNodes.splice(i, 1);
+  k.parentNode = null;
+}
+function adopt(parent, k) { if (k && typeof k === 'object') { detach(k); k.parentNode = parent; } return k; }
+function text(s) {
+  const n = { nodeType: 3, textContent: String(s), data: String(s), parentNode: null };
+  n.remove = () => detach(n);
+  return n;
+}
 function el(tag) {
   const t = {
-    nodeType: 1, tagName: String(tag).toUpperCase(), childNodes: [], style: {}, dataset: {},
+    nodeType: 1, tagName: String(tag).toUpperCase(), nodeName: String(tag).toUpperCase(),
+    childNodes: [], style: {}, dataset: {}, attributes: [], parentNode: null,
+    get lastChild() { return t.childNodes[t.childNodes.length - 1] || null; },
     className: '', id: '', value: '', textContent: '', innerHTML: '', checked: false,
     files: [], width: 512, height: 512, disabled: false,
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     setAttribute(k, v) { if (k === 'id') { t.id = v; byId.set(v, p); } },
-    getAttribute() { return null; }, removeAttribute() {},
+    getAttribute() { return null; }, removeAttribute() {}, hasAttribute() { return false; },
     addEventListener() {}, removeEventListener() {},
-    append(...k) { t.childNodes.push(...k); }, appendChild(k) { t.childNodes.push(k); return k; },
-    insertBefore(k) { t.childNodes.push(k); return k; },
-    replaceChildren(...k) { t.childNodes = k.filter(x => x != null && x !== false); },
-    remove() {}, replaceWith() {}, focus() {}, blur() {}, click() {}, scrollIntoView() {},
+    append(...k) { for (const c of k) t.childNodes.push(adopt(p, c)); },
+    appendChild(k) { t.childNodes.push(adopt(p, k)); return k; },
+    insertBefore(k, ref) {
+      adopt(p, k);
+      const i = ref ? t.childNodes.indexOf(ref) : -1;
+      if (i < 0) t.childNodes.push(k); else t.childNodes.splice(i, 0, k);
+      return k;
+    },
+    replaceChildren(...k) {
+      for (const c of t.childNodes) if (c && typeof c === 'object') c.parentNode = null;
+      t.childNodes = [];
+      for (const c of k) if (c != null && c !== false) t.childNodes.push(adopt(p, c));
+    },
+    remove() { detach(p); }, replaceWith() {}, focus() {}, blur() {}, click() {}, scrollIntoView() {},
     setPointerCapture() {}, releasePointerCapture() {}, select() {}, setSelectionRange() {},
     getBoundingClientRect: () => ({ top: 0, left: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0 }),
     querySelector: () => null, querySelectorAll: () => [], closest: () => null, contains: () => false,
@@ -37,7 +63,7 @@ const APP = el('div');
 globalThis.document = {
   getElementById: id => (id === 'app' ? APP : (byId.get(id) || null)),
   createElement: el, createElementNS: (_ns, tag) => el(tag),
-  createTextNode: s => ({ nodeType: 3, textContent: String(s) }),
+  createTextNode: text,
   querySelector: () => null, querySelectorAll: () => [],
   addEventListener() {}, removeEventListener() {},
   body: el('body'), documentElement: el('html'), head: el('head'),

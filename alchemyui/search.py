@@ -129,7 +129,9 @@ async def image_search(query: str, settings: Settings, *,
         if urlparse(image).scheme not in ("http", "https") or image in seen:
             continue
         thumb = r.get("thumbnail_src") or image
-        thumb = urljoin(str(response.url), thumb)
+        thumb = urljoin(str(response.url), thumb) if isinstance(thumb, str) else image
+        if urlparse(thumb).scheme not in ("http", "https"):
+            thumb = image
         seen.add(image)
         out.append({
             "url": image,

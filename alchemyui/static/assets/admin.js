@@ -61,6 +61,8 @@ function liveSection() {
   const L = S.live;
   if (!L) return h('p', { class: 'muted' }, 'Loading…');
   const g = L.gpu || {};
+  // nvidia-smi may report "[N/A]" for temperature or utilisation on some GPUs
+  const n = (v, d = 0) => (typeof v === 'number' ? v.toFixed(d) : '—');
   const running = L.queue.jobs.find(j => j.position === 0);
   // The one reading that explains "why is everything slow?" from a distance.
   const capped = g.available && g.capped
@@ -71,8 +73,8 @@ function liveSection() {
     : null;
   return h('section', {}, capped,
     h('div', { class: 'adm-tiles' },
-      tile('GPU draw', g.available ? `${g.power_w.toFixed(0)} W` : 'n/a', g.available ? `${g.temp_c.toFixed(0)} °C` : null),
-      tile('Utilisation', g.available ? `${g.util_pct.toFixed(0)}%` : 'n/a'),
+      tile('GPU draw', g.available ? `${n(g.power_w)} W` : 'n/a', g.available ? `${n(g.temp_c)} °C` : null),
+      tile('Utilisation', g.available ? `${n(g.util_pct)}%` : 'n/a'),
       tile('VRAM', g.available ? `${(g.vram_used_mib / 1024).toFixed(1)} / ${(g.vram_total_mib / 1024).toFixed(0)} GB` : 'n/a'),
       tile('Queue', String(L.queue.depth), running ? `running: ${running.owner}` : 'idle'),
       tile('ComfyUI', L.comfy_connected ? 'connected' : 'down', (L.resident_checkpoint || '').split('/').pop() || 'nothing loaded'),
@@ -152,9 +154,11 @@ async function loadFailures() {
 async function poll() {
   // Only while someone is looking: this is also what keeps nvidia-smi quiet.
   if (document.visibilityState === 'visible') {
-    try { S.live = await get('/api/admin/live'); S.error = null; }
-    catch (e) { S.error = e.message; }
-    render();
+    try {
+      try { S.live = await get('/api/admin/live'); S.error = null; }
+      catch (e) { S.error = e.message; }
+      render();
+    } catch (e) { console.error(e); }   // a render error must not end the polling
   }
   setTimeout(poll, 2000);
 }

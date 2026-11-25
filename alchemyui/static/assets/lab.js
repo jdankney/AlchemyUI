@@ -214,7 +214,7 @@ function runView() {
   for (const rv of rows) for (const cv of cols) { const c = find(rv, cv); if (c) visible.push(c); }
   const pct = R.progress.total ? Math.round(100 * (R.progress.done + R.progress.failed) / R.progress.total) : 0;
 
-  return h('div', { class: 'run-view' },
+  return h('div', { class: 'run-view', id: 'run-view' },
     h('div', { class: 'run-head' },
       h('h2', {}, R.title),
       h('span', { class: 'pill' + (R.state === 'running' ? ' is-on' : '') },
@@ -376,9 +376,16 @@ async function poll() {
   // Only while someone is looking, and only while the run is still going.
   if (document.visibilityState === 'visible' && S.view === 'run' && S.run && S.run.state === 'running') {
     try {
-      S.run = await get(`/api/lab/runs/${S.run.id}`);
-      if (S.run.state !== 'running') await loadRuns();
-      render();
+      const id = S.run.id;
+      const run = await get(`/api/lab/runs/${id}`);
+      if (S.view === 'run' && S.run && S.run.id === id) {   // still looking at it
+        S.run = run;
+        if (run.state !== 'running') { await loadRuns(); render(); }
+        // Only the run itself changes while it renders: swapping just that
+        // keeps focus (and an open menu) in the new-run form beside it.
+        else if (!S.viewer && document.getElementById('run-view')) swap('run-view', runView());
+        else render();
+      }
     } catch { /* the next tick tries again */ }
   }
   setTimeout(poll, 2500);

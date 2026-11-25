@@ -230,6 +230,7 @@ function newChat() {
 }
 
 async function openThread(id) {
+  for (const jobId of Object.keys(S.previews)) releasePreview(jobId);   // the old thread's frames
   S.threadId = id; S.thread = null; S.turns = []; S.threadError = null;
   render();
   if (!id) { focusComposer(); return; }
@@ -273,11 +274,13 @@ function setModel(name, remember = true) {
 // One EventSource for the whole app. Turns, queue snapshots, job progress and
 // finished images all arrive here, for this user only. EventSource brings its
 // own reconnect backoff; whatever a gap swallowed is re-fetched on reopen.
+let eventsBackoff = 1000;
 function connectEvents() {
   const es = new EventSource('/api/events');
   es.onopen = () => {
     const wasDown = !S.connected;
     S.connected = true;
+    eventsBackoff = 1000;
     if (wasDown && S.booted) resync();
     renderRail();
   };
@@ -287,14 +290,24 @@ function connectEvents() {
                  preview: onPreview, image: onImage }[d.type];
     if (on) on(d);
   };
-  es.onerror = () => { S.connected = false; renderRail(); };
+  es.onerror = () => {
+    S.connected = false; renderRail();
+    // EventSource retries a dropped connection by itself, but a non-200 answer
+    // (a 502 from the auth proxy while the app restarts) closes it for good.
+    if (es.readyState === EventSource.CLOSED) {
+      setTimeout(connectEvents, eventsBackoff);
+      eventsBackoff = Math.min(eventsBackoff * 2, 30000);
+    }
+  };
 }
 
 async function resync() {
   await loadThreads();
-  if (S.view === 'chat' && S.threadId) {
+  const id = S.threadId;
+  if (S.view === 'chat' && id) {
     try {
-      const d = await api.get(`/api/threads/${encodeURIComponent(S.threadId)}`);
+      const d = await api.get(`/api/threads/${encodeURIComponent(id)}`);
+      if (S.threadId !== id || S.view !== 'chat') return;   // moved on meanwhile
       S.thread = d.thread; S.turns = d.turns.map(remember); renderThread();
     } catch { /* the next reconnect tries again */ }
   }
@@ -383,7 +396,12 @@ async function onPreview(d) {
   try {
     const r = await fetch(`/api/jobs/${d.job_id}/preview?v=${d.seq}`);
     if (r.ok) {
-      const url = URL.createObjectURL(await r.blob());
+      const blob = await r.blob();
+      // The job may have finished, or the thread changed, while this frame
+      // was in flight: then nothing would ever revoke it.
+      const job = turnOf(d.job_id)?.jobs.find(j => j.id === d.job_id);
+      if (!job || !LIVE.has(job.status)) { _previewBusy[d.job_id] = false; return; }
+      const url = URL.createObjectURL(blob);
       if (S.previews[d.job_id]) URL.revokeObjectURL(S.previews[d.job_id]);
       S.previews[d.job_id] = url;
       const t = turnOf(d.job_id); if (t) renderTurn(t.id);
@@ -420,8 +438,7 @@ function render() {
       rail(),
       h('div', { class: 'scrim', onclick: () => { S.drawer = false; render(); } }),
       h('main', { class: 'main' }, mobileTop(), mainView())),
-    S.viewer ? viewer() : null,
-    h('div', { class: 'toasts', id: 'toasts' })].filter(Boolean));
+    S.viewer ? viewer() : null].filter(Boolean));
 }
 const swap = (id, el) => { const old = document.getElementById(id); if (old && !patch(old, el)) old.replaceWith(el); };
 function renderRail() { swap('rail', rail()); }
@@ -666,7 +683,9 @@ function question(t) {
       h('button', { class: 'candidate', type: 'button',
                     title: c.source ? `${c.title} — ${c.source}` : c.title,
                     onclick: () => answer(t, { option: i }) },
-        h('img', { src: c.thumb_url, alt: c.title || 'Web reference', loading: 'lazy' }),
+        // Third-party thumbnails: send them nothing about this page.
+        h('img', { src: c.thumb_url, alt: c.title || 'Web reference', loading: 'lazy',
+                   referrerpolicy: 'no-referrer' }),
         h('span', { class: 'candidate-title' }, c.title || 'Web image'),
         c.source ? h('span', { class: 'candidate-source' }, c.source) : null)))
       : q.options.length ? h('div', { class: 'q-opts' }, q.options.map((o, i) =>
@@ -960,11 +979,19 @@ async function copyText(text) {
 
 /* ----------------------------------------------------------------- library */
 let _libTimer = null;
+// Patched in place, not re-rendered: replacing the page would take the
+// search box (and its focus) away from someone still typing in it.
+function renderLibrary() {
+  if (S.view === 'library' && document.getElementById('library')) swap('library', libraryView());
+  else render();
+}
 async function loadLibrary(reset) {
   const L = S.lib;
-  if (L.loading) return;
+  // A filter changed mid-load: run again once this load lands, so the grid
+  // ends up matching the search box rather than whatever was asked first.
+  if (L.loading) { if (reset) L.again = true; return; }
   if (reset) { L.images = []; L.done = false; }
-  L.loading = true; render();
+  L.loading = true; renderLibrary();
   const q = new URLSearchParams({ limit: '60' });
   if (L.q.trim()) q.set('q', L.q.trim());
   if (L.fav) q.set('favorite', 'true');
@@ -975,7 +1002,9 @@ async function loadLibrary(reset) {
     L.images = reset ? got : L.images.concat(got);
     L.done = got.length < 60;
   } catch (e) { toast(e.message, true); }
-  L.loading = false; render();
+  L.loading = false;
+  if (L.again) { L.again = false; return loadLibrary(true); }
+  renderLibrary();
 }
 
 // Justified rows: every image keeps its real shape and each full row fills
@@ -1003,7 +1032,7 @@ function libraryView() {
   const L = S.lib;
   const width = libWidth(), target = (window.innerWidth || 1280) > 720 ? 230 : 140;
   const open = img => { S.viewer = { items: L.images, i: L.images.findIndex(x => x.id === img.id) }; render(); };
-  return h('div', { class: 'page' }, h('div', { class: 'wrap wide' },
+  return h('div', { class: 'page', id: 'library' }, h('div', { class: 'wrap wide' },
     h('div', { class: 'page-head' },
       h('h1', {}, 'Library'),
       h('button', { class: 'pill' + (!L.fav ? ' is-on' : ''), onclick: () => { L.fav = false; loadLibrary(true); } }, 'All'),
