@@ -2,7 +2,7 @@
 # which replaces @REPO@ with the absolute path of this checkout)
 # oauth2-proxy: AlchemyUI's auth edge. Binds this laptop's NetBird interface
 # (wt0, discovered at start) on :4180, authenticates against Llamacracy's Dex
-# on gpu-server, and forwards X-Forwarded-{User,Email,Preferred-Username} to
+# on your Dex host, and forwards X-Forwarded-{User,Email,Preferred-Username} to
 # the app on 127.0.0.1. Adapted from Llamacracy's llamacracy-auth.service.
 [Unit]
 Description=AlchemyUI auth edge (oauth2-proxy on wt0)
@@ -13,7 +13,11 @@ ConditionPathExists=/sys/class/net/wt0
 [Service]
 Type=simple
 WorkingDirectory=@REPO@
+# No IPv4 on wt0 yet (NetBird still connecting at boot) must fail the start --
+# an empty address would make oauth2-proxy listen on every interface, LAN
+# included. Restart=on-failure tries again shortly.
 ExecStartPre=/bin/sh -c 'a=$(ip -4 -o addr show wt0 | awk "{print \\$4}" | cut -d/ -f1); \
+  [ -n "$a" ] || { echo "wt0 has no IPv4 address yet" >&2; exit 1; }; \
   echo "OAUTH2_PROXY_HTTP_ADDRESS=$a:4180" > %t/alchemyui-auth.env'
 EnvironmentFile=-%t/alchemyui-auth.env
 EnvironmentFile=@REPO@/deploy/oauth2-proxy.env

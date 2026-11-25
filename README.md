@@ -2,8 +2,9 @@
 
 Self-hosted image generation with a single prompt box, backed by a local
 [ComfyUI](https://github.com/comfyanonymous/ComfyUI). You never see a node
-graph. Sibling project to **Llamacracy**, built the same way on purpose:
-FastAPI, one SQLite file, vanilla JS with no build step, systemd user units.
+graph. Sibling project to [**Llamacracy**](https://github.com/jdankney/Llamacracy),
+built the same way on purpose: FastAPI, one SQLite file, vanilla JS with no
+build step, systemd user units.
 
 One GPU, strict FIFO, honest ETAs, no cloud.
 
@@ -30,11 +31,16 @@ A few friends share one GPU: accounts through Llamacracy's Dex, everything
 private to its owner, strict FIFO across people, energy and electricity cost
 per person, and a live admin page.
 
-> **v2 is being built in phases.** Phases 6 (multi-user), 7 (the chat and
-> its router), 7.5 (the Alchemy UI, the model switcher and the Photoreal Lab)
-> and 8 (editing one part of a photo) are in. Phase 9 (web references, "me in
-> Nike Pro sweatpants") is wired end to end and needs a SearXNG URL. See
-> [Roadmap](#roadmap).
+> **Status: proof of concept, no longer under active development.** It runs
+> daily on one laptop for a handful of people, and is published as it stands.
+> Phases 6 (multi-user), 7 (the chat and its router), 7.5 (the Alchemy UI, the
+> model switcher and the Photoreal Lab), 8 (editing one part of a photo) and
+> 9 (web references, "me in Nike Pro sweatpants"; needs a SearXNG URL) are in.
+> See [Roadmap](#roadmap) for what was planned next.
+>
+> It assumes a setup like the author's: an NVIDIA GPU with ComfyUI on the same
+> machine, and, for more than one user, [NetBird](https://netbird.io) plus a
+> Dex instance (Llamacracy's) for sign-in. Single-user local use needs neither.
 
 Underneath the chat, everything v1 built is still there: SDXL and SD1.5
 generation, img2img, inpainting on a dedicated inpainting UNet, outpainting,
@@ -54,7 +60,7 @@ You need a working ComfyUI (with its own Python environment) and
 cd ~/ComfyUI && ./venv/bin/python main.py --fp8_e4m3fn-unet --preview-method auto
 
 # 2. AlchemyUI
-cd ~/Documents/Coding/AlchemyUI
+git clone https://github.com/jdankney/AlchemyUI.git && cd AlchemyUI
 cp .env.example .env          # defaults are fine for a local single-user run
 uv sync
 uv run alchemyui validate --live    # is the registry sane? are the models there?

@@ -1,6 +1,8 @@
 [project]
 name = "alchemyui"
 version = "0.1.0"
+description = "Self-hosted image generation you can talk to, backed by a local ComfyUI."
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.141.1",
@@ -17,8 +19,13 @@ dependencies = [
     "websockets>=15.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/jdankney/AlchemyUI"
+"Sibling project" = "https://github.com/jdankney/Llamacracy"
+
 [project.scripts]
 alchemyui = "alchemyui.cli:main"
+alchemyui-dev = "alchemyui.app:dev"
 
 [dependency-groups]
 dev = [
