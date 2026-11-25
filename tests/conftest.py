@@ -169,6 +169,9 @@ class FakeComfy:
     async def history(self, prompt_id: str) -> dict:
         return {"outputs": {"9": {"images": list(self.images)}}}
 
+    async def knows(self, prompt_id: str) -> bool:
+        return any(pid == prompt_id for pid, _ in self.submitted)
+
     async def view(self, filename: str, subfolder: str = "", type_: str = "output") -> bytes:
         return TINY_PNG
 

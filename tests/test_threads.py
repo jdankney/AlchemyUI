@@ -270,6 +270,24 @@ async def test_retry_runs_the_same_plan_with_new_seeds(engine_harness):
     assert [i["handle"] for i in again["images"]] == ["t1.1", "t1.2"]
 
 
+async def test_a_failed_rerun_of_a_finished_turn_reports_the_failure(engine_harness):
+    h = engine_harness
+    h.router.results = [RouteResult(P(), "primary")]
+    t = await h.engine.create_turn(h.alice, "x", [])
+    assert (await settle(h, t["id"]))["state"] == "done"
+    h.comfy.mode = "error"
+    await h.engine.retry(h.alice, t["id"])
+    again = None
+    for _ in range(200):
+        again = await h.engine.turn_public(await h.row(t["id"]))
+        if again["state"] in ("done", "failed") and len(again["jobs"]) == 2 \
+                and all(j["status"] not in ("queued", "running") for j in again["jobs"]):
+            break
+        await asyncio.sleep(0.02)
+    assert again["state"] == "failed"
+    assert "KSampler" in (again["reply"] or "")
+
+
 async def test_empty_and_oversized_messages_are_refused(engine_harness):
     h = engine_harness
     with pytest.raises(TurnError, match="type a message"):
@@ -285,3 +303,14 @@ async def test_a_face_attachment_is_offered_instead_of_an_empty_likeness(engine_
     h.router.results = [RouteResult(P(action="ask", question="?"), "primary")]
     await settle(h, (await h.engine.create_turn(h.alice, "this is me, make me a knight", [up]))["id"])
     assert h.router.requests[0].faces == ["a1"]
+
+
+async def test_a_turn_still_planning_when_its_owner_is_disabled_queues_nothing(engine_harness):
+    h = engine_harness
+    h.router.results = [RouteResult(P(), "primary")]
+    # Disabled between the request being accepted and the plan being executed.
+    await h.db.execute("UPDATE users SET disabled = 1 WHERE id = ?", (h.alice,))
+    t = await h.engine.create_turn(h.alice, "x", [])
+    done = await settle(h, t["id"])
+    assert done["state"] == "failed" and "disabled" in done["reply"]
+    assert h.comfy.submitted == []

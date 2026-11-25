@@ -131,9 +131,12 @@ def cmd_reassign(args: argparse.Namespace) -> int:
             return 1
         c.execute("BEGIN")
         try:
-            for t in ("jobs", "images", "uploads", "refs"):
+            for t in ("jobs", "images", "uploads", "refs", "threads", "turns"):
                 n = c.execute(f"UPDATE {t} SET user_id = ? WHERE user_id = ?", (dst, src)).rowcount
                 print(f"  {OK} {t:<8} {n} row(s)")
+            n = c.execute("UPDATE lab_runs SET created_by = ? WHERE created_by = ?",
+                          (dst, src)).rowcount
+            print(f"  {OK} lab_runs {n} row(s)")
             n = c.execute("UPDATE OR IGNORE presets SET user_id = ? WHERE user_id = ?",
                           (dst, src)).rowcount
             print(f"  {OK} presets  {n} row(s)")

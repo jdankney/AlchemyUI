@@ -221,7 +221,15 @@ class LabEngine:
                     "LEFT JOIN jobs j ON j.id = c.job_id "
                     "WHERE c.run_id = ? AND c.state = 'queued'", (run["id"],)):
                 if cell["job_status"] not in (JobState.QUEUED.value, JobState.RUNNING.value):
-                    await self._submit(run, cell)
+                    try:
+                        await self._submit(run, cell)
+                    except Exception:  # noqa: BLE001 -- never let one cell stop the app booting
+                        # Its checkpoint or prompt left the registry since the
+                        # run began: fail the cell rather than the lifespan.
+                        log.exception("lab run %s: cell %s cannot be resumed",
+                                      run["id"], cell["id"])
+                        await self.db.execute(
+                            "UPDATE lab_cells SET state = 'failed' WHERE id = ?", (cell["id"],))
             await self._maybe_finish(run["id"])
 
     # -- making a run -------------------------------------------------------

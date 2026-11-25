@@ -106,7 +106,7 @@ def _open(data: bytes) -> Image.Image:
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
-    except (UnidentifiedImageError, OSError):
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise FaceRejected("That file isn't an image we can read (try PNG, JPEG or WebP).")
     # Orientation is applied now: a sideways photo detects badly, and the crop
     # has to match what the person saw when they picked the file.

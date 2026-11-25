@@ -19,6 +19,7 @@ the queue: promoting a job past someone else's would be cutting in line.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import json
 import logging
@@ -115,6 +116,7 @@ class Job:
     _finished: asyncio.Event = field(default_factory=asyncio.Event)
     _done: asyncio.Event = field(default_factory=asyncio.Event)
     _interrupted_upstream: bool = False
+    _submitted: bool = False
 
     @property
     def checkpoint(self) -> str:
@@ -250,6 +252,8 @@ class QueueManager:
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        if self._bg:
+            await asyncio.wait(set(self._bg), timeout=5)
 
     async def _reconcile(self) -> None:
         """Startup reconciliation (spec section 7).
@@ -375,7 +379,12 @@ class QueueManager:
             if observed_load > 0:
                 st[1] = (1 - a) * st[1] + a * observed_load
 
-        t = asyncio.create_task(self._persist_stats(key, st))
+        self._spawn(self._persist_stats(key, st))
+
+    def _spawn(self, coro) -> None:
+        """Fire and forget, but keep a reference so the task is not collected
+        mid-flight, and so stop() can let it finish before the DB closes."""
+        t = asyncio.create_task(coro)
         self._bg.add(t)
         t.add_done_callback(self._bg.discard)
 
@@ -562,6 +571,9 @@ class QueueManager:
     def unsubscribe(self, q: asyncio.Queue) -> None:
         self._subscribers.pop(q, None)
 
+    def is_subscribed(self, q: asyncio.Queue) -> bool:
+        return q in self._subscribers
+
     def _put(self, q: asyncio.Queue, event: dict) -> None:
         try:
             q.put_nowait(event)
@@ -649,64 +661,93 @@ class QueueManager:
             job = self._pick_next()
             if job.state in TERMINAL:
                 continue
+            try:
+                await self._process(job)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- one bad job must not stop the queue
+                # Something outside _run failed (a locked or full database while
+                # persisting, say). Without this the worker task dies silently
+                # and every later job waits forever behind a "running" one.
+                log.exception("queue worker: job %s could not be finalised", job.id)
+                self._active = None
+                if job.state not in TERMINAL:
+                    job.state = JobState.FAILED
+                    job.error_text = job.error_text or \
+                        "The app hit an unexpected error handling this job."
+                job.finished_at = job.finished_at or now()
+                job._done.set()
+                with contextlib.suppress(Exception):
+                    await self._persist_job(job)
+                with contextlib.suppress(Exception):
+                    await self._broadcast()
 
-            self._active = job
-            job.picked_at = now()
-            sampler = (self._sampler_factory or GpuPowerSampler)()
-            sampler.start()
-            job.state = JobState.RUNNING
-            job.cold_start = job.checkpoint != self._resident_checkpoint
+    async def _process(self, job: Job) -> None:
+        self._active = job
+        job.picked_at = now()
+        sampler = (self._sampler_factory or GpuPowerSampler)()
+        sampler.start()
+        job.state = JobState.RUNNING
+        job.cold_start = job.checkpoint != self._resident_checkpoint
+        shutting_down = False
+        try:
             await self._persist_job(job)
             await self._broadcast()
             await self._emit({"type": "job", "job": job.public(0)}, owner=job.user_id)
-
-            shutting_down = False
-            try:
-                await self._run(job)
-            except ComfyError as e:
-                job.state = JobState.FAILED
-                job.error_text = e.message
-                job.error_detail = e.detail
-            except asyncio.CancelledError:
-                # The app is going down with this job in flight. Deliberately
-                # leave the row `running` and finalise nothing: the generation
-                # did not survive, and _reconcile() on the next boot is the
-                # only thing that knows that. Claiming success here would
-                # record an image that never existed.
-                shutting_down = True
-                raise
-            except Exception as e:  # noqa: BLE001
-                log.exception("job %s crashed", job.id)
-                job.state = JobState.FAILED
-                job.error_text = "The app hit an unexpected error handling this job."
-                job.error_detail = repr(e)
-            finally:
-                await sampler.stop()
-                self._active = None
-                if not shutting_down:
-                    if job.finished_at is None:
-                        job.finished_at = now()
-                    if job.state not in TERMINAL:
-                        job.state = JobState.COMPLETED
-                    # Everything that held the GPU is metered, failures and
-                    # cancellations too, and the result is frozen on the row.
-                    r = finalise(job.picked_at, job.finished_at, sampler.mean, self.cfg)
-                    job.occupancy_seconds, job.gpu_watts_mean = r.occupancy_seconds, r.gpu_watts_mean
-                    job.energy_wh, job.rate_used, job.cost_usd = r.energy_wh, r.rate_used, r.cost_usd
-                    await self._persist_job(job)
-                    job.preview = None          # the real image supersedes it
-                    job._done.set()
-                    await self._emit({"type": "job", "job": job.public()}, owner=job.user_id)
-                    await self._broadcast()
-                    await self._notify(job)
+            await self._run(job)
+        except ComfyError as e:
+            job.state = JobState.FAILED
+            job.error_text = e.message
+            job.error_detail = e.detail
+        except asyncio.CancelledError:
+            # The app is going down with this job in flight. Deliberately
+            # leave the row `running` and finalise nothing: the generation
+            # did not survive, and _reconcile() on the next boot is the
+            # only thing that knows that. Claiming success here would
+            # record an image that never existed.
+            shutting_down = True
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("job %s crashed", job.id)
+            job.state = JobState.FAILED
+            job.error_text = "The app hit an unexpected error handling this job."
+            job.error_detail = repr(e)
+        finally:
+            await sampler.stop()
+            self._active = None
+            if not shutting_down:
+                if job.finished_at is None:
+                    job.finished_at = now()
+                if job.state not in TERMINAL:
+                    job.state = JobState.COMPLETED
+                # Everything that held the GPU is metered, failures and
+                # cancellations too, and the result is frozen on the row.
+                r = finalise(job.picked_at, job.finished_at, sampler.mean, self.cfg)
+                job.occupancy_seconds, job.gpu_watts_mean = r.occupancy_seconds, r.gpu_watts_mean
+                job.energy_wh, job.rate_used, job.cost_usd = r.energy_wh, r.rate_used, r.cost_usd
+                await self._persist_job(job)
+                job.preview = None          # the real image supersedes it
+                job._done.set()
+                await self._emit({"type": "job", "job": job.public()}, owner=job.user_id)
+                await self._broadcast()
+                await self._notify(job)
 
     async def _run(self, job: Job) -> None:
         workflow = self.reg.require(job.workflow_id)
         graph = workflow.build_graph(job.params)
 
+        # A cancel or a Lab preemption can land between _pick_next() and here.
+        # ComfyUI ignores a targeted /interrupt for a prompt it has not started,
+        # so the only safe answer is to never submit it.
+        if job._cancel.is_set():
+            job.finished_at = now()
+            job.state = JobState.CANCELLED
+            return
+
         # We mint the prompt_id, so the WS relay can key on it from this
         # moment -- no race against the POST response coming back.
         await self.comfy.submit(graph, job.id)
+        job._submitted = True
 
         budget = self.cfg.job_start_timeout_s + 10 * max(
             1.0, self._job_estimate(job, self._resident_checkpoint)
@@ -728,13 +769,24 @@ class QueueManager:
                 return
 
             if cancelled in done and not job._finished.is_set():
-                # /interrupt already went out from cancel(); give ComfyUI a
-                # moment to unwind and confirm before we call it cancelled.
+                # /interrupt already went out from cancel(), but if it landed
+                # while the POST was in flight ComfyUI ignored it (a targeted
+                # interrupt only stops the running prompt). Drop it from the
+                # pending queue, interrupt again now that it may be running,
+                # then give ComfyUI a moment to unwind and confirm.
                 await self.comfy.drop_pending(job.id)
+                await self.comfy.interrupt(job.id)
                 try:
-                    await asyncio.wait_for(job._finished.wait(), timeout=30.0)
-                except TimeoutError:
-                    log.warning("job %s: no interrupt confirmation from ComfyUI", job.id)
+                    # A prompt dropped before it started sends no events at
+                    # all, so only wait when ComfyUI still has it.
+                    still_there = await self.comfy.knows(job.id)
+                except Exception:  # noqa: BLE001
+                    still_there = True
+                if still_there:
+                    try:
+                        await asyncio.wait_for(job._finished.wait(), timeout=30.0)
+                    except TimeoutError:
+                        log.warning("job %s: no interrupt confirmation from ComfyUI", job.id)
         finally:
             finished.cancel()
             cancelled.cancel()
@@ -827,6 +879,13 @@ class QueueManager:
         if t == "_ws_connected":
             self._comfy_connected = True
             await self._broadcast()
+            job = self._active
+            if job is not None and job._submitted and not job._finished.is_set():
+                # Whatever happened while the socket was down was not seen:
+                # the job may have finished, or ComfyUI may have restarted and
+                # forgotten it. Without this the queue waits out the whole
+                # timeout budget behind it.
+                self._spawn(self._recheck_active(job))
             return
         if t == "_ws_disconnected":
             self._comfy_connected = False
@@ -895,6 +954,18 @@ class QueueManager:
             job.error_detail = json.dumps(d, indent=2)[:8000]
             log.error("execution_error for job %s: %s", job.id, job.error_detail)
             job._finished.set()
+
+    async def _recheck_active(self, job: Job) -> None:
+        try:
+            if await self.comfy.history(job.id):
+                job._finished.set()
+                return
+            if not await self.comfy.knows(job.id):
+                job.error_text = ("ComfyUI lost this job (it may have restarted). "
+                                  "Please try again.")
+                job._finished.set()
+        except Exception:  # noqa: BLE001 -- the timeout is still the backstop
+            log.warning("job %s: could not recheck after reconnect", job.id, exc_info=True)
 
     def _apply_progress(self, job: Job, kind: str, d: dict) -> bool:
         """Update a job's progress. Returns True if anything changed.

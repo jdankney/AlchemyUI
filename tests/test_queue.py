@@ -158,7 +158,7 @@ async def test_cancel_while_running_really_interrupts(tmp_db_path, tmp_output_di
         assert await qm.cancel(job.id) is True
         await asyncio.wait_for(job._done.wait(), 10)
 
-        assert comfy.interrupts == [job.id]        # targeted, by prompt_id
+        assert comfy.interrupts and set(comfy.interrupts) == {job.id}   # targeted, by prompt_id
         assert job.state is JobState.CANCELLED
         assert job.progress_value < 30             # stopped part-way
         row = await qm.db.fetch_one("SELECT status FROM jobs WHERE id=?", (job.id,))

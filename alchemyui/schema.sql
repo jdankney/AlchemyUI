@@ -180,6 +180,7 @@ CREATE TABLE IF NOT EXISTS turns (
     created_at        REAL NOT NULL,
     planned_at        REAL,
     finished_at       REAL,
+    attempt_at        REAL,                    -- when "Run again" last started; older jobs don't settle it
     UNIQUE (thread_id, seq)
 );
 CREATE INDEX IF NOT EXISTS ix_turns_state ON turns(state);

@@ -26,12 +26,15 @@ class SearchError(Exception):
 
 
 def _public_address(addr: str) -> bool:
+    """Globally routable unicast only. is_global (not "not is_private") so the
+    100.64.0.0/10 shared space -- NetBird and Tailscale overlays -- is refused."""
     try:
         ip = ipaddress.ip_address(addr)
     except ValueError:
         return False
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
 
 
 async def _resolve_host(host: str, port: int) -> list[str]:
@@ -44,7 +47,12 @@ async def _resolve_host(host: str, port: int) -> list[str]:
     return sorted({info[4][0] for info in infos})
 
 
-async def _check_public_url(url: str) -> None:
+async def _check_public_url(url: str) -> str:
+    """Vet a URL and return the one address the request must connect to.
+
+    The caller connects to that address rather than letting httpx resolve the
+    name again, so a DNS answer that changes between check and connect (DNS
+    rebinding) cannot steer the fetch onto a private address."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise SearchError("That reference is not a web link we can fetch.")
@@ -60,13 +68,26 @@ async def _check_public_url(url: str) -> None:
     else:
         if not _public_address(host):
             raise SearchError("That reference is on a private address.")
-        return
+        return host
     if host.lower() in {"localhost", "localhost.localdomain"}:
         raise SearchError("That reference is on a private address.")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     addrs = await _resolve_host(host, port)
     if not addrs or any(not _public_address(a) for a in addrs):
         raise SearchError("That reference resolves to a private address.")
+    return addrs[0]
+
+
+def _pinned_request(client: httpx.AsyncClient, url: str, addr: str) -> httpx.Request:
+    """A GET for url that connects to addr, with the original Host header and,
+    for https, the original name for SNI and certificate checking."""
+    parsed = httpx.URL(url)
+    request = client.build_request(
+        "GET", parsed.copy_with(host=addr),
+        headers={"Host": parsed.netloc.decode("ascii")})
+    if parsed.scheme == "https":
+        request.extensions["sni_hostname"] = parsed.host
+    return request
 
 
 async def image_search(query: str, settings: Settings, *,
@@ -140,8 +161,10 @@ async def fetch_reference(url: str, settings: Settings, *,
         async with httpx.AsyncClient(transport=transport, timeout=settings.search_timeout_s,
                                      headers=headers, follow_redirects=False) as client:
             for _ in range(settings.search_max_redirects + 1):
-                await _check_public_url(current)
-                async with client.stream("GET", current) as response:
+                addr = await _check_public_url(current)
+                response = await client.send(_pinned_request(client, current, addr),
+                                             stream=True)
+                try:
                     if response.status_code in (301, 302, 303, 307, 308):
                         location = response.headers.get("location")
                         if not location:
@@ -165,6 +188,8 @@ async def fetch_reference(url: str, settings: Settings, *,
                         chunks.append(chunk)
                     data = b"".join(chunks)
                     break
+                finally:
+                    await response.aclose()
             else:
                 raise SearchError("That reference redirected too many times.")
     except (httpx.HTTPError, OSError) as e:

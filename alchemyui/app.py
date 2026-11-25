@@ -698,7 +698,8 @@ async def prompt_history(q: str = "", limit: int = 40,
     limit = max(1, min(limit, 200))
     rows = await db.fetch_all(
         "SELECT params_json, workflow_id, MAX(created_at) AS at, COUNT(*) AS n "
-        "FROM images WHERE user_id = ? GROUP BY json_extract(params_json, '$.prompt') "
+        "FROM images WHERE user_id = ? AND lab_run_id IS NULL "
+        "GROUP BY json_extract(params_json, '$.prompt') "
         "ORDER BY at DESC LIMIT 400", (principal.user_id,)
     )
     needle = q.strip().lower()
@@ -783,8 +784,12 @@ async def delete_preset(preset_id: str,
 async def image_file(image_id: str,
                      principal: Principal = Depends(get_principal),
                      db: Database = Depends(get_db)):
-    row = await db.fetch_one("SELECT path, filename FROM images WHERE id = ? AND user_id = ?",
-                             (image_id, principal.user_id))
+    # The Lab is shared by every admin, but its images belong to whichever
+    # admin started the run; any admin may see them.
+    row = await db.fetch_one(
+        "SELECT path, filename FROM images WHERE id = ? "
+        "AND (user_id = ? OR (? AND lab_run_id IS NOT NULL))",
+        (image_id, principal.user_id, int(principal.is_admin)))
     if row is None:
         raise HTTPException(404, "no such image")
     path = Path(row["path"])
@@ -835,6 +840,11 @@ async def events(request: Request,
                     event = await asyncio.wait_for(q.get(), timeout=15)
                     yield _sse(event)
                 except TimeoutError:
+                    # Dropped for falling too far behind: end the stream so
+                    # EventSource reconnects and the page resyncs, rather
+                    # than keeping it alive on keepalives with no events.
+                    if not qm.is_subscribed(q) and q.empty():
+                        break
                     yield ": keepalive\n\n"
         finally:
             qm.unsubscribe(q)

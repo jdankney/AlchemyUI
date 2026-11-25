@@ -47,6 +47,8 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE images ADD COLUMN lab_run_id TEXT",
     "ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'user'",
     "ALTER TABLE jobs ADD COLUMN lab_run_id TEXT",
+    # Release prep: a retried turn settles on its new jobs only.
+    "ALTER TABLE turns ADD COLUMN attempt_at REAL",
 ]
 
 # Indexes on migrated columns run AFTER the ALTERs: schema.sql is applied

@@ -101,7 +101,7 @@ def normalise_upload(data: bytes, max_edge: int, max_mb: float) -> tuple[bytes, 
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
-    except (UnidentifiedImageError, OSError):
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise UploadRejected("That file isn't an image we can read (try PNG, JPEG or WebP).")
 
     # EXIF orientation is applied now rather than carried: the mask is painted
@@ -137,7 +137,7 @@ def normalise_mask(data: bytes, width: int, height: int) -> bytes:
     try:
         mask = Image.open(io.BytesIO(data))
         mask.load()
-    except (UnidentifiedImageError, OSError):
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise UploadRejected("The mask isn't a readable image.")
 
     # A mask drawn on a canvas is RGBA with transparent un-painted areas;

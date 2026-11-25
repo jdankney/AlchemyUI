@@ -82,13 +82,44 @@ async def test_fetch_reference_rechecks_a_redirect(monkeypatch):
     monkeypatch.setattr(search, "_resolve_host", public)
 
     def handler(req):
-        called.append(str(req.url))
+        called.append((str(req.url), req.headers["host"], req.extensions.get("sni_hostname")))
         return httpx.Response(302, headers={"location": "http://127.0.0.1/evil.png"})
 
     with pytest.raises(search.SearchError, match="private"):
         await search.fetch_reference("https://example.com/a.png", settings(),
                                      transport=httpx.MockTransport(handler))
-    assert called == ["https://example.com/a.png"]
+    # connected to the vetted address, never to a fresh lookup of the name
+    assert called == [("https://93.184.216.34/a.png", "example.com", "example.com")]
+
+
+@pytest.mark.parametrize("addr", ["100.100.100.100", "100.64.0.1", "::ffff:127.0.0.1",
+                                  "10.0.0.1", "169.254.169.254", "fd00::1"])
+async def test_fetch_reference_refuses_overlay_and_mapped_addresses(addr):
+    def handler(req):
+        raise AssertionError("no request may be sent")
+
+    host = f"[{addr}]" if ":" in addr else addr
+    with pytest.raises(search.SearchError, match="private"):
+        await search.fetch_reference(f"http://{host}/a.png", settings(),
+                                     transport=httpx.MockTransport(handler))
+
+
+async def test_fetch_reference_is_not_fooled_by_a_second_dns_answer(monkeypatch):
+    answers = iter([["93.184.216.34"], ["127.0.0.1"]])
+
+    async def rebinding(host, port):
+        return next(answers)
+
+    monkeypatch.setattr(search, "_resolve_host", rebinding)
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.host)
+        return httpx.Response(200, content=png(), headers={"content-type": "image/png"})
+
+    await search.fetch_reference("http://rebind.example/a.png", settings(),
+                                 transport=httpx.MockTransport(handler))
+    assert seen == ["93.184.216.34"]
 
 
 async def test_fetch_reference_requires_an_image(monkeypatch):

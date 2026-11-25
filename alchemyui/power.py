@@ -7,6 +7,7 @@ the mean is multiplied by the occupancy. CPU energy is estimated in config.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import shutil
 from pathlib import Path
@@ -17,6 +18,7 @@ _HAVE_NVIDIA_SMI = shutil.which("nvidia-smi") is not None
 
 
 async def _query(fields: str) -> list[str] | None:
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits",
@@ -26,6 +28,15 @@ async def _query(fields: str) -> list[str] | None:
         return [x.strip() for x in out.decode().strip().splitlines()[0].split(",")]
     except (TimeoutError, OSError, ValueError, IndexError):
         return None
+    finally:
+        # A wedged driver makes nvidia-smi hang; on a timeout (or when the
+        # sampler is cancelled mid-call) kill and reap it, or one zombie piles
+        # up every few seconds for as long as the driver stays stuck.
+        if proc is not None and proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            with contextlib.suppress(Exception):
+                await asyncio.shield(proc.wait())
 
 
 class GpuPowerSampler:

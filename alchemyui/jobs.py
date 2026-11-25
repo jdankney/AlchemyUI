@@ -113,6 +113,11 @@ async def submit_jobs(qm: QueueManager, db: Database, settings: Settings,
                       workflow: WorkflowInfo, raw: dict, checkpoint: CheckpointInfo | None,
                       user_id: int, *, count: int = 1, explicit_seed: bool = False,
                       upload=None, turn_id: str | None = None) -> list[Job]:
+    # Checked here, at the last moment: an admin can disable someone while one
+    # of their messages is still being planned, after cancel_user() has run.
+    owner = await db.fetch_one("SELECT disabled FROM users WHERE id = ?", (user_id,))
+    if owner is not None and owner["disabled"]:
+        raise JobRejected("This account has been disabled.")
     params = workflow.resolve(raw, checkpoint)
     if not params["prompt"]:
         raise JobRejected("a prompt is required")

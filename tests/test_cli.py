@@ -20,12 +20,18 @@ def test_reassign_moves_every_owned_row(tmp_db_path, monkeypatch):
     c.execute("INSERT INTO jobs (id, user_id, workflow_id, status, params_json, created_at) "
               "VALUES ('j', 1, 'w', 'completed', '{}', 1)")
     c.execute("INSERT INTO presets VALUES ('p', 1, 'portrait', 'w', '{}', 1, 1)")
+    c.execute("INSERT INTO threads (id, user_id, created_at, updated_at) VALUES ('th', 1, 1, 1)")
+    c.execute("INSERT INTO turns (id, thread_id, user_id, seq, state, created_at) "
+              "VALUES ('tu', 'th', 1, 1, 'done', 1)")
     db.close()
 
     assert main(["reassign", "old@x", "new@x"]) == 0
     db = Database(tmp_db_path)
     assert db._conn.execute("SELECT user_id FROM jobs").fetchone()[0] == 2
     assert db._conn.execute("SELECT user_id FROM presets").fetchone()[0] == 2
+    # chat history follows the person, or the new account's rail is empty
+    assert db._conn.execute("SELECT user_id FROM threads").fetchone()[0] == 2
+    assert db._conn.execute("SELECT user_id FROM turns").fetchone()[0] == 2
     get_settings.cache_clear()
 
 

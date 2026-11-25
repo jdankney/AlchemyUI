@@ -235,6 +235,15 @@ class ComfyClient:
         r.raise_for_status()
         return r.json().get(prompt_id, {})
 
+    async def knows(self, prompt_id: str) -> bool:
+        """Is this prompt running or waiting in ComfyUI's own queue?"""
+        r = await self._client.get("/queue", timeout=15.0)
+        r.raise_for_status()
+        q = r.json()
+        return any(len(item) > 1 and item[1] == prompt_id
+                   for key in ("queue_running", "queue_pending")
+                   for item in q.get(key) or [])
+
     async def view(self, filename: str, subfolder: str = "", type_: str = "output") -> bytes:
         r = await self._client.get(
             "/view", params={"filename": filename, "subfolder": subfolder, "type": type_}

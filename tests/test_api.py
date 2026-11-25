@@ -167,7 +167,8 @@ def test_cancel_a_running_job(client):
 
     _wait(client, lambda: client.comfy.submitted)
     assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
-    assert client.comfy.interrupts == [job_id]
+    # targeted, and only ever at this job (the worker re-sends it once it unwinds)
+    assert client.comfy.interrupts and set(client.comfy.interrupts) == {job_id}
 
     status = _wait(client, lambda: next(
         (j["status"] for j in client.get("/api/jobs").json()["jobs"]

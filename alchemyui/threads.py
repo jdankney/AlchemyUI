@@ -362,7 +362,7 @@ class ChatEngine:
                     plan.get("compiled") or {}).get("workflow"):
                 raise TurnError("there is nothing to retry here", 409)
             await self._set(turn_id, state=TurnState.PLANNING.value, reply=None,
-                            finished_at=None)
+                            finished_at=None, attempt_at=now())
         await self._emit(turn_id)
         self._spawn(turn_id, Plan.from_dict(plan["plan"]), row["plan_source"])
         return await self.turn_public(await self._row(turn_id))
@@ -664,9 +664,12 @@ class ChatEngine:
                 return
             if row["state"] == TurnState.CANCELLED and row["finished_at"]:
                 return
+            # Only this attempt's jobs: after "Run again" on a finished turn, the
+            # earlier success must not hide a rerun that failed.
             jobs = await self.db.fetch_all(
-                "SELECT status, error_text FROM jobs WHERE turn_id = ? ORDER BY created_at",
-                (turn_id,))
+                "SELECT status, error_text FROM jobs WHERE turn_id = ? AND created_at >= ? "
+                "ORDER BY created_at",
+                (turn_id, row["attempt_at"] or 0))
             live = {JobState.QUEUED.value, JobState.RUNNING.value}
             if not jobs or any(j["status"] in live for j in jobs):
                 return
